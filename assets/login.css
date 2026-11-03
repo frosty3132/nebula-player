@@ -1,0 +1,40 @@
+/* Вход в SoundCloud: кнопка, карточка аккаунта, свёрнутый блок «Свои ключи API». */
+
+.sc-login-btn { gap: 10px; }
+.sc-login-btn.big { padding: 14px 26px; font-size: 1.06em; }
+.sc-login-btn.waiting { animation: sc-wait calc(1.6s * var(--anim, 1)) ease-in-out infinite; }
+@keyframes sc-wait { 50% { box-shadow: 0 0 0 6px rgba(var(--accent-rgb), .18), var(--glow-shadow); } }
+.sc-login-note { margin-top: 12px; }
+.hero-note .sc-login-btn { flex: 0 0 auto; }
+
+.sc-account { display: flex; align-items: center; gap: 16px; }
+.sc-avatar {
+  width: 64px;
+  height: 64px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  background: var(--hover-2);
+  box-shadow: var(--glow-shadow);
+}
+.sc-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.sc-acc-text { flex: 1; min-width: 0; }
+.sc-acc-name { font-size: 1.25em; font-weight: 800; }
+
+.collapse-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  text-align: left;
+  color: var(--muted);
+}
+.collapse-head .set-card-title { margin: 0; color: var(--text); }
+.collapse-head > .icon { transition: transform var(--t-fast) var(--ease); }
+.collapse-head.open { margin-bottom: 12px; }
+.collapse-head.open > .icon { transform: rotate(180deg); }
+.collapse-head:hover > .icon { color: var(--text); }

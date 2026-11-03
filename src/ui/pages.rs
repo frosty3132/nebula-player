@@ -4,6 +4,7 @@
 use super::actions::*;
 use super::icons::Icon;
 use super::player_bar::Cover;
+use super::sc_account::LoginButton;
 use super::state::*;
 use super::tracks::*;
 use super::widgets::{Empty, IconBtn, Spinner};
@@ -115,14 +116,14 @@ fn Section(title: String, #[props(default)] action: Option<(String, Route)>, chi
 
 #[component]
 fn ErrorBox(text: String) -> Element {
-    let st = app_state();
-    let needs_setup = text.contains("не подключён");
+    // нет сессии или она истекла — сразу предлагаем войти
+    let needs_login = text.contains("не подключён") || text.contains("войдите");
     rsx! {
         div { class: "error-box glass",
             Icon { name: "warning", size: 20 }
             span { "{text}" }
-            if needs_setup {
-                button { class: "btn small", onclick: move |_| navigate(st, Route::Settings(SettingsTab::Account)), "Открыть настройки" }
+            if needs_login {
+                LoginButton { class: "small" }
             }
         }
     }
@@ -200,8 +201,8 @@ fn Hero() -> Element {
                 if !sc_ready {
                     div { class: "hero-note",
                         Icon { name: "cloud", size: 18 }
-                        span { "SoundCloud ещё не подключён — пока доступна локальная музыка." }
-                        button { class: "btn small primary", onclick: move |_| navigate(st, Route::Settings(SettingsTab::Account)), "Подключить" }
+                        span { "Войдите в SoundCloud, чтобы слушать и искать миллионы треков. Без входа доступна музыка с компьютера." }
+                        LoginButton { class: "small" }
                     }
                 }
             }
@@ -934,22 +935,12 @@ pub fn SoundCloudPage() -> Element {
     let ready = *st.sc_ready.read();
     let user = st.sc_user.read().clone();
     let mut tab = use_signal(|| "likes");
-    if !ready {
+    let Some(u) = user.filter(|_| ready) else {
         return rsx! {
             div { class: "page",
                 PageHeader { title: "Мой SoundCloud", kicker: "Аккаунт" }
-                Empty { icon: "cloud", title: "SoundCloud не подключён", text: "Укажите Client ID и Client Secret своего приложения SoundCloud, затем войдите в аккаунт.",
-                    button { class: "btn primary", onclick: move |_| navigate(st, Route::Settings(SettingsTab::Account)), "Открыть настройки" }
-                }
-            }
-        };
-    }
-    let Some(u) = user else {
-        return rsx! {
-            div { class: "page",
-                PageHeader { title: "Мой SoundCloud", kicker: "Аккаунт" }
-                Empty { icon: "login", title: "Войдите в аккаунт", text: "После входа здесь появятся ваши лайки, лента подписок и плейлисты.",
-                    button { class: "btn primary", onclick: move |_| navigate(st, Route::Settings(SettingsTab::Account)), "Войти через SoundCloud" }
+                Empty { icon: "cloud", title: "Войдите в SoundCloud", text: "Откроется окно со страницей входа SoundCloud — как на сайте. После входа здесь появятся ваши лайки, лента подписок и плейлисты.",
+                    LoginButton { class: "big" }
                 }
             }
         };
