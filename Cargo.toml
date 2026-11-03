@@ -1,0 +1,64 @@
+[package]
+name = "nebula-player"
+version = "0.1.0"
+edition = "2021"
+description = "Nebula — галактический музыкальный плеер для SoundCloud и локальной музыки"
+license = "MIT"
+default-run = "nebula-player"
+build = "build.rs"
+
+[[bin]]
+name = "nebula-player"
+path = "src/main.rs"
+
+[dependencies]
+# UI: Dioxus (Rust-компоненты, рендер через системный WebView2)
+dioxus = { version = "0.7.10", default-features = false, features = ["desktop", "macro", "html", "signals", "hooks", "document", "launch"] }
+dioxus-desktop = { version = "0.7.10", default-features = false, features = ["tokio_runtime", "transparent", "gnu"] }
+
+# async / сеть
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "net", "io-util"] }
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "charset", "http2", "json", "gzip", "form", "query", "system-proxy"] }
+futures-util = "0.3"
+
+# сериализация
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# аудио
+symphonia = { version = "0.5.5", default-features = false, features = ["mp3", "aac", "isomp4", "flac", "ogg", "vorbis", "wav", "pcm"] }
+cpal = "0.18"
+rtrb = "0.4"
+lofty = "0.25"
+
+# утилиты
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+dirs = "6"
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = "0.3"
+open = "5"
+rfd = "0.17"
+urlencoding = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "env-filter"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+window-vibrancy = "0.8"
+
+[profile.dev]
+opt-level = 1
+
+# Декодеры и DSP даже в debug-сборке должны работать быстро
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+debug = false
+# unwind оставлен намеренно: паника в потоке декодера (битый поток) не должна ронять весь плеер
+panic = "unwind"

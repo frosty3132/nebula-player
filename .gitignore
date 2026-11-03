@@ -1,0 +1,5 @@
+/target
+/dist
+/.tools
+# пути конкретного компьютера; создаётся scripts\setup-gnu.ps1
+/.cargo/config.toml

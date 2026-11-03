@@ -1,0 +1,549 @@
+//! Действия интерфейса: навигация, очередь, воспроизведение, избранное,
+//! тексты, предзагрузка следующего трека, уведомления.
+//! Сетевые операции выполняются на tokio-рантайме, UI только ждёт результат.
+
+use super::state::*;
+use crate::audio::{MediaSpec, PlaybackState};
+use crate::library::SavedSession;
+use crate::model::{ArtSize, Track};
+use crate::services::svc;
+use crate::settings::RepeatMode;
+use dioxus::core::spawn_forever;
+use dioxus::prelude::*;
+use std::future::Future;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
+static TOAST_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Выполнить future на фоновом рантайме и дождаться результата из UI.
+pub async fn bg<T: Send + 'static>(fut: impl Future<Output = T> + Send + 'static) -> Option<T> {
+    svc().rt.spawn(fut).await.ok()
+}
+
+pub fn toast(state: AppState, kind: ToastKind, text: impl Into<String>) {
+    let id = TOAST_ID.fetch_add(1, Ordering::Relaxed);
+    let mut toasts = state.toasts;
+    {
+        let mut w = toasts.write();
+        w.push(Toast { id, kind, text: text.into() });
+        while w.len() > 4 {
+            w.remove(0);
+        }
+    }
+    spawn_forever(async move {
+        tokio::time::sleep(Duration::from_millis(4200)).await;
+        toasts.write().retain(|t| t.id != id);
+    });
+}
+
+pub fn navigate(state: AppState, route: Route) {
+    let mut st = state;
+    let cur = st.route.peek().clone();
+    if cur == route {
+        return;
+    }
+    {
+        let mut back = st.back.write();
+        back.push(cur);
+        if back.len() > 60 {
+            back.remove(0);
+        }
+    }
+    st.forward.write().clear();
+    st.route.set(route);
+    st.menu.set(None);
+    scroll_top();
+}
+
+pub fn go_back(state: AppState) {
+    let mut st = state;
+    let prev = st.back.write().pop();
+    if let Some(prev) = prev {
+        let cur = st.route.peek().clone();
+        st.forward.write().push(cur);
+        st.route.set(prev);
+        scroll_top();
+    }
+}
+
+pub fn go_forward(state: AppState) {
+    let mut st = state;
+    let next = st.forward.write().pop();
+    if let Some(next) = next {
+        let cur = st.route.peek().clone();
+        st.back.write().push(cur);
+        st.route.set(next);
+        scroll_top();
+    }
+}
+
+fn scroll_top() {
+    document::eval("document.getElementById('content-scroll')?.scrollTo({top: 0});");
+}
+
+// ─────────────────────────────── воспроизведение ───────────────────────────────
+
+pub fn play_list(state: AppState, tracks: Vec<Track>, start: usize, label: &str) {
+    if tracks.is_empty() {
+        return;
+    }
+    let (shuffle, skip_previews) = {
+        let s = state.settings.peek();
+        (s.shuffle, s.skip_previews)
+    };
+    let mut tracks = tracks;
+    let mut start = start.min(tracks.len() - 1);
+    if skip_previews {
+        let chosen = tracks[start].id.clone();
+        tracks.retain(|t| !t.is_preview() || t.id == chosen);
+        start = tracks.iter().position(|t| t.id == chosen).unwrap_or(0);
+    }
+    tracks.retain(|t| !t.is_blocked());
+    if tracks.is_empty() {
+        toast(state, ToastKind::Error, "Эти треки недоступны для воспроизведения");
+        return;
+    }
+    let start = start.min(tracks.len() - 1);
+    let mut q = state.queue;
+    q.write().set(tracks, start, shuffle, label);
+    start_current(state, 0, true);
+}
+
+pub fn play_single(state: AppState, track: Track) {
+    play_list(state, vec![track], 0, "Трек");
+}
+
+pub fn start_current(state: AppState, start_ms: u64, autoplay: bool) {
+    let Some(track) = state.queue.peek().current().cloned() else { return };
+    let mut s = state;
+    let id = *s.load_id.peek() + 1;
+    s.load_id.set(id);
+    s.now.set(Some(track.clone()));
+    s.pstate.set(PlaybackState::Loading);
+    s.position.set(start_ms);
+    s.duration.set(track.duration_ms);
+    s.buffered.set(0.0);
+    s.restore_pos.set(None);
+    s.preview.set(false);
+    s.library.write().push_history(&track);
+
+    load_lyrics(state, &track);
+    load_accent(state, &track);
+
+    spawn_forever(async move {
+        let res = resolve(state, &track).await;
+        if *s.load_id.peek() != id {
+            return;
+        }
+        match res {
+            Ok((spec, preview)) => {
+                s.preview.set(preview);
+                if preview {
+                    toast(state, ToastKind::Info, "SoundCloud отдаёт только 30-секундное превью этого трека");
+                }
+                svc().player.load(id, spec, start_ms, autoplay, track.duration_ms);
+            }
+            Err(e) => {
+                s.pstate.set(PlaybackState::Error);
+                toast(state, ToastKind::Error, format!("«{}»: {e}", track.title));
+                skip_after_error(state, id);
+            }
+        }
+    });
+}
+
+async fn resolve(state: AppState, track: &Track) -> Result<(MediaSpec, bool), String> {
+    if let Some(p) = &track.path {
+        return Ok((MediaSpec::File(p.into()), false));
+    }
+    let pre = state.preloaded.peek().clone();
+    if pre.track_id == track.id && pre.at.is_some_and(|t| t.elapsed() < Duration::from_secs(300)) {
+        if let Some(spec) = pre.spec {
+            return Ok((spec, pre.preview));
+        }
+    }
+    let quality = state.settings.peek().quality;
+    let t = track.clone();
+    bg(async move { svc().sc.stream(&t, quality).await }).await.unwrap_or_else(|| Err("внутренняя ошибка".into()))
+}
+
+pub fn skip_after_error(state: AppState, failed_id: u64) {
+    let mut errs = state.errors_in_row;
+    let n = *errs.peek() + 1;
+    errs.set(n);
+    if n >= 4 {
+        toast(state, ToastKind::Error, "Несколько треков подряд не воспроизводятся — остановка");
+        errs.set(0);
+        return;
+    }
+    let has_next = {
+        let q = state.queue.peek();
+        q.index.is_some_and(|i| i + 1 < q.tracks.len())
+    };
+    if has_next {
+        spawn_forever(async move {
+            tokio::time::sleep(Duration::from_millis(1400)).await;
+            if *state.load_id.peek() == failed_id {
+                next(state, false);
+            }
+        });
+    }
+}
+
+pub fn next(state: AppState, manual: bool) {
+    let repeat = state.settings.peek().repeat;
+    let (cur, len) = {
+        let q = state.queue.peek();
+        (q.index, q.tracks.len())
+    };
+    let Some(cur) = cur else { return };
+    if !manual && repeat == RepeatMode::One {
+        svc().player.seek(0);
+        svc().player.play();
+        return;
+    }
+    let mut q = state.queue;
+    if cur + 1 < len {
+        q.write().index = Some(cur + 1);
+        start_current(state, 0, true);
+    } else if repeat == RepeatMode::All && len > 0 {
+        q.write().index = Some(0);
+        start_current(state, 0, true);
+    } else if state.settings.peek().autoplay_related {
+        autoplay_related(state);
+    } else if !manual {
+        let mut p = state.pstate;
+        p.set(PlaybackState::Ended);
+    }
+}
+
+pub fn prev(state: AppState) {
+    let restart_after = (state.settings.peek().prev_restart_s * 1000.0) as u64;
+    if *state.position.peek() > restart_after {
+        seek(state, 0);
+        return;
+    }
+    let cur = state.queue.peek().index;
+    match cur {
+        Some(i) if i > 0 => {
+            let mut q = state.queue;
+            q.write().index = Some(i - 1);
+            start_current(state, 0, true);
+        }
+        _ => seek(state, 0),
+    }
+}
+
+pub fn jump_to(state: AppState, index: usize) {
+    let mut q = state.queue;
+    if index < q.peek().tracks.len() {
+        q.write().index = Some(index);
+        start_current(state, 0, true);
+    }
+}
+
+fn autoplay_related(state: AppState) {
+    let seed = state.queue.peek().current().cloned();
+    let Some(seed) = seed else { return };
+    let Some(urn) = seed.urn.clone() else {
+        let mut p = state.pstate;
+        p.set(PlaybackState::Ended);
+        return;
+    };
+    if !svc().sc.configured() {
+        return;
+    }
+    spawn_forever(async move {
+        let res = bg(async move { svc().sc.related(&urn).await }).await;
+        match res {
+            Some(Ok(page)) => {
+                let known: std::collections::HashSet<String> = {
+                    let q = state.queue.peek();
+                    let lib = state.library.peek();
+                    q.tracks.iter().map(|t| t.id.clone()).chain(lib.history.iter().take(40).map(|t| t.id.clone())).collect()
+                };
+                let fresh: Vec<Track> = page.items.into_iter().filter(|t| !known.contains(&t.id) && !t.is_blocked()).take(15).collect();
+                if fresh.is_empty() {
+                    let mut p = state.pstate;
+                    p.set(PlaybackState::Ended);
+                    return;
+                }
+                let mut q = state.queue;
+                {
+                    let mut w = q.write();
+                    let next_idx = w.index.map(|i| i + 1).unwrap_or(0);
+                    w.tracks.extend(fresh);
+                    w.index = Some(next_idx.min(w.tracks.len() - 1));
+                }
+                toast(state, ToastKind::Info, format!("Автовоспроизведение: похожие на «{}»", seed.title));
+                start_current(state, 0, true);
+            }
+            Some(Err(e)) => toast(state, ToastKind::Error, e),
+            None => {}
+        }
+    });
+}
+
+pub fn toggle_play(state: AppState) {
+    let p = *state.pstate.peek();
+    let loaded = state.now.peek().is_some() && !matches!(p, PlaybackState::Idle | PlaybackState::Error);
+    if !loaded {
+        if state.queue.peek().current().is_some() {
+            let pos = state.restore_pos.peek().unwrap_or(0);
+            start_current(state, pos, true);
+        }
+        return;
+    }
+    if p == PlaybackState::Ended {
+        seek(state, 0);
+        svc().player.play();
+        return;
+    }
+    svc().player.toggle();
+}
+
+pub fn seek(state: AppState, ms: u64) {
+    let mut pos = state.position;
+    let dur = *state.duration.peek();
+    let ms = if dur > 0 { ms.min(dur.saturating_sub(250)) } else { ms };
+    if state.restore_pos.peek().is_some() {
+        let mut r = state.restore_pos;
+        r.set(Some(ms));
+        pos.set(ms);
+        return;
+    }
+    svc().player.seek(ms);
+    pos.set(ms);
+}
+
+pub fn seek_rel(state: AppState, delta_ms: i64) {
+    let pos = *state.position.peek() as i64;
+    seek(state, (pos + delta_ms).max(0) as u64);
+}
+
+pub fn set_volume(state: AppState, v: f32) {
+    let mut s = state.settings;
+    let mut w = s.write();
+    w.volume = v.clamp(0.0, w.max_volume);
+    if w.volume > 0.0 {
+        w.muted = false;
+    }
+}
+
+pub fn toggle_mute(state: AppState) {
+    let mut s = state.settings;
+    let m = s.peek().muted;
+    s.write().muted = !m;
+}
+
+pub fn toggle_shuffle(state: AppState) {
+    let mut s = state.settings;
+    let on = !s.peek().shuffle;
+    s.write().shuffle = on;
+    let mut q = state.queue;
+    if on {
+        q.write().shuffle_on();
+    } else {
+        q.write().shuffle_off();
+    }
+    toast(state, ToastKind::Info, if on { "Перемешивание включено" } else { "Перемешивание выключено" });
+}
+
+pub fn cycle_repeat(state: AppState) {
+    let mut s = state.settings;
+    let r = s.peek().repeat.next();
+    s.write().repeat = r;
+    let label = match r {
+        RepeatMode::Off => "Повтор выключен",
+        RepeatMode::All => "Повтор очереди",
+        RepeatMode::One => "Повтор трека",
+    };
+    toast(state, ToastKind::Info, label);
+}
+
+// ─────────────────────────────── очередь и библиотека ───────────────────────────────
+
+pub fn add_next(state: AppState, t: Track) {
+    let mut q = state.queue;
+    let was_empty = q.peek().index.is_none();
+    q.write().insert_next(t);
+    toast(state, ToastKind::Success, "Будет следующим");
+    if was_empty {
+        start_current(state, 0, true);
+    }
+}
+
+pub fn add_to_queue(state: AppState, t: Track) {
+    let mut q = state.queue;
+    let was_empty = q.peek().index.is_none();
+    q.write().append(t);
+    toast(state, ToastKind::Success, "Добавлено в очередь");
+    if was_empty {
+        start_current(state, 0, true);
+    }
+}
+
+pub fn toggle_like(state: AppState, t: &Track) {
+    let mut lib = state.library;
+    let added = lib.write().toggle_favorite(t);
+    toast(state, ToastKind::Success, if added { "Добавлено в избранное" } else { "Убрано из избранного" });
+}
+
+pub fn open_on_soundcloud(state: AppState, t: &Track) {
+    if let Some(url) = &t.permalink {
+        if open::that(url).is_err() {
+            toast(state, ToastKind::Error, "Не удалось открыть браузер");
+        }
+    } else if let Some(p) = &t.path {
+        if let Some(dir) = std::path::Path::new(p).parent() {
+            let _ = open::that(dir);
+        }
+    }
+}
+
+// ─────────────────────────────── тексты и акцент ───────────────────────────────
+
+pub fn load_lyrics(state: AppState, track: &Track) {
+    let mut ly = state.lyrics;
+    let mut off = state.lyrics_offset;
+    if !state.settings.peek().lyrics_enabled {
+        ly.set(LyricsState::Idle);
+        return;
+    }
+    ly.set(LyricsState::Loading);
+    off.set(svc().lyrics.offset(&track.id));
+    let t = track.clone();
+    let id = track.id.clone();
+    spawn_forever(async move {
+        let res = bg(async move { svc().lyrics.for_track(&t).await }).await;
+        if state.now.peek().as_ref().map(|t| t.id.as_str()) != Some(id.as_str()) {
+            return;
+        }
+        let found = matches!(res, Some(Ok(Some(_))));
+        ly.set(match res {
+            Some(Ok(Some(l))) => LyricsState::Found(l),
+            Some(Ok(None)) => LyricsState::NotFound,
+            Some(Err(e)) => LyricsState::Failed(e),
+            None => LyricsState::Failed("внутренняя ошибка".into()),
+        });
+        let mut s = state.settings;
+        if found && s.peek().lyrics_auto_open && !s.peek().lyrics_open {
+            s.write().lyrics_open = true;
+        }
+    });
+}
+
+pub fn set_lyrics_offset(state: AppState, delta: i32) {
+    let mut off = state.lyrics_offset;
+    let v = (*off.peek() + delta).clamp(-30_000, 30_000);
+    off.set(v);
+    if let Some(t) = state.now.peek().as_ref() {
+        svc().lyrics.set_offset(&t.id, v);
+    }
+}
+
+fn accent_key(t: &Track) -> Option<String> {
+    if let Some(p) = &t.path {
+        return t.local_cover.then(|| format!("file:{p}"));
+    }
+    t.artwork.as_deref().map(|u| crate::model::sc_art_size(u, ArtSize::Medium))
+}
+
+pub fn load_accent(state: AppState, track: &Track) {
+    let mut acc = state.accent;
+    if !state.settings.peek().dynamic_accent {
+        if acc.peek().is_some() {
+            acc.set(None);
+        }
+        return;
+    }
+    let Some(key) = accent_key(track) else {
+        acc.set(None);
+        return;
+    };
+    let id = track.id.clone();
+    spawn_forever(async move {
+        let c = bg(async move { svc().media.accent_for(&key).await }).await.flatten();
+        if state.now.peek().as_ref().map(|t| t.id.as_str()) == Some(id.as_str()) {
+            acc.set(c);
+        }
+    });
+}
+
+// ─────────────────────────────── предзагрузка и сессия ───────────────────────────────
+
+pub fn maybe_preload(state: AppState) {
+    if !state.settings.peek().preload_next {
+        return;
+    }
+    let (pos, dur) = (*state.position.peek(), *state.duration.peek());
+    if dur == 0 || dur.saturating_sub(pos) > 25_000 {
+        return;
+    }
+    let next = {
+        let q = state.queue.peek();
+        q.index.and_then(|i| q.tracks.get(i + 1)).cloned()
+    };
+    let Some(next) = next else { return };
+    if state.preloaded.peek().track_id == next.id {
+        return;
+    }
+    let mut pre = state.preloaded;
+    pre.set(Preloaded { track_id: next.id.clone(), spec: None, preview: false, at: None });
+    spawn_forever(async move {
+        if !next.is_local() && svc().sc.configured() {
+            let quality = state.settings.peek().quality;
+            let t = next.clone();
+            if let Some(Ok((spec, preview))) = bg(async move { svc().sc.stream(&t, quality).await }).await {
+                svc().player.preload(spec.clone());
+                pre.set(Preloaded { track_id: next.id.clone(), spec: Some(spec), preview, at: Some(Instant::now()) });
+            }
+            if let Some(url) = next.artwork.as_deref().map(|u| crate::model::sc_art_size(u, ArtSize::Large)) {
+                let _ = bg(async move { svc().media.image_bytes(&url).await }).await;
+            }
+        }
+        if state.settings.peek().lyrics_enabled {
+            let t = next.clone();
+            let _ = bg(async move { svc().lyrics.for_track(&t).await }).await;
+        }
+    });
+}
+
+pub fn save_session(state: AppState) {
+    let remember = state.settings.peek().remember_session;
+    let session = if remember {
+        let q = state.queue.peek();
+        q.index.map(|i| SavedSession {
+            queue: q.tracks.iter().take(500).cloned().collect(),
+            index: i.min(499),
+            position_ms: *state.position.peek(),
+        })
+    } else {
+        None
+    };
+    std::thread::spawn(move || crate::library::save_session(session.as_ref()));
+}
+
+pub fn restore_session(state: AppState) {
+    if !state.settings.peek().remember_session {
+        return;
+    }
+    let Some(s) = crate::library::load_session() else { return };
+    if s.queue.is_empty() {
+        return;
+    }
+    let mut q = state.queue;
+    q.write().set(s.queue, s.index, false, "Прошлая сессия");
+    let cur = q.peek().current().cloned();
+    if let Some(t) = cur {
+        let mut st = state;
+        st.now.set(Some(t.clone()));
+        st.duration.set(t.duration_ms);
+        st.position.set(s.position_ms);
+        st.restore_pos.set(Some(s.position_ms));
+        st.pstate.set(PlaybackState::Paused);
+        load_lyrics(state, &t);
+        load_accent(state, &t);
+    }
+}
