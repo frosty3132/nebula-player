@@ -272,6 +272,7 @@ pub const NAV_ITEMS: &[(&str, &str, &str)] = &[
 pub const HOME_SECTIONS: &[(&str, &str)] = &[
     ("hero", "Приветствие"),
     ("continue", "Продолжить"),
+    ("listening", "Время прослушивания"),
     ("recent", "Недавно слушали"),
     ("related", "Похоже на ваше"),
     ("genres", "Жанры"),

@@ -8,11 +8,12 @@ use super::sc_account::LoginButton;
 use super::state::*;
 use super::tracks::*;
 use super::widgets::{Empty, IconBtn, Spinner};
-use crate::model::{fmt_count, image_url, sc_art_size, ArtSize, Page, PlaylistInfo, Track, UserInfo};
+use crate::model::{fmt_count, fmt_listening, image_url, sc_art_size, ArtSize, Page, PlaylistInfo, Track, UserInfo};
 use crate::services::svc;
 use crate::theme::HOME_SECTIONS;
 use dioxus::core::spawn_forever;
 use dioxus::prelude::*;
+use futures_util::stream::{self, StreamExt};
 use std::time::Duration;
 
 /// (жанр в API, подпись, цвет 1, цвет 2, символ)
@@ -141,6 +142,7 @@ pub fn Home() -> Element {
                 match entry.id.as_str() {
                     "hero" => rsx! { Hero { key: "{entry.id}" } },
                     "continue" => rsx! { ContinueCard { key: "{entry.id}" } },
+                    "listening" => rsx! { ListeningSection { key: "{entry.id}" } },
                     "recent" => rsx! { RecentSection { key: "{entry.id}" } },
                     "related" => rsx! { RelatedSection { key: "{entry.id}" } },
                     "genres" => rsx! {
@@ -156,7 +158,7 @@ pub fn Home() -> Element {
             if sections.iter().all(|e| !e.visible) {
                 Empty { icon: "home", title: "Главная пуста", text: "Все разделы скрыты в настройках расположения." }
             }
-            div { class: "home-foot", "Nebula · данные SoundCloud и LRCLIB" }
+            div { class: "home-foot", "Nebula · SoundCloud, Яндекс Музыка и LRCLIB" }
             // упоминание HOME_SECTIONS для редактора раскладки
             span { class: "hidden", "{HOME_SECTIONS.len()}" }
         }
@@ -228,6 +230,53 @@ fn ContinueCard() -> Element {
             }
             button { class: "play-btn big", "data-el": "play_button", onclick: move |_| toggle_play(st),
                 Icon { name: if playing { "pause" } else { "play" }, size: 26 }
+            }
+        }
+    }
+}
+
+#[component]
+fn ListeningSection() -> Element {
+    let st = app_state();
+    let library = st.library.read().clone();
+    let stats = library.listening.clone();
+    let total = stats.total_with_imported();
+    let top = stats
+        .by_track_ms
+        .iter()
+        .max_by_key(|(_, ms)| **ms)
+        .and_then(|(id, ms)| {
+            library
+                .history
+                .iter()
+                .chain(library.favorites.iter())
+                .find(|t| &t.id == id)
+                .cloned()
+                .map(|t| (t, *ms))
+        });
+    rsx! {
+        Section { title: "Время прослушивания",
+            div { class: "listening-panel glass", "data-el": "listening_stats",
+                div { class: "listening-total",
+                    div { class: "listening-label", "Всего в Nebula" }
+                    strong { "{fmt_listening(total)}" }
+                    span { class: "listening-caption",
+                        if total == 0 { "Начните слушать — статистика обновится автоматически" } else { "Счётчик учитывает только реально проигранное время" }
+                    }
+                }
+                div { class: "listening-divider" }
+                div { class: "listening-detail",
+                    div { class: "listening-label", "Треков в статистике" }
+                    strong { "{stats.by_track_ms.len()}" }
+                    if let Some((track, ms)) = top {
+                        div { class: "listening-top ellipsis", title: "{track.title}", "Чаще всего: {track.title} · {fmt_listening(ms)}" }
+                    } else {
+                        div { class: "listening-top", "Самый любимый трек появится здесь" }
+                    }
+                }
+                if stats.imported_ms > 0 {
+                    span { class: "listening-imported", "Импортировано: {fmt_listening(stats.imported_ms)}" }
+                }
             }
         }
     }
@@ -707,8 +756,123 @@ pub fn Playlists() -> Element {
                     }
                 }
             }
+            Section { title: "Импорт из Яндекс Музыки",
+                YandexImport {}
+            }
             if logged {
                 Section { title: "Плейлисты SoundCloud", ScMyPlaylists {} }
+            }
+        }
+    }
+}
+
+#[component]
+fn YandexImport() -> Element {
+    let mut st = app_state();
+    let mut url = use_signal(String::new);
+    let mut token = use_signal(|| svc().yandex.token());
+    let mut busy = use_signal(|| false);
+    let mut status = use_signal(|| None::<(bool, String)>);
+    let mut import = move |_: ()| {
+        let input = url.peek().trim().to_string();
+        if input.is_empty() || *busy.peek() {
+            return;
+        }
+        let token_value = token.peek().trim().to_string();
+        if !token_value.is_empty() {
+            svc().yandex.set_token(&token_value);
+        }
+        busy.set(true);
+        status.set(Some((true, "Загружаю публичный плейлист…".into())));
+        let local = st.local.peek().clone();
+        let sc_ready = *st.sc_ready.peek();
+        spawn(async move {
+            let fetched = bg(async move { svc().yandex.import_playlist(&input).await }).await;
+            let Some(fetched) = fetched else {
+                status.set(Some((false, "Не удалось запустить импорт".into())));
+                busy.set(false);
+                return;
+            };
+            match fetched {
+                Ok(playlist) => {
+                    let title = playlist.title.clone();
+                    let count = playlist.tracks.len();
+                    status.set(Some((true, format!("Ищу {count} треков в SoundCloud и подготавливаю обложки…"))));
+                    let matched = bg(async move {
+                        let sc = if sc_ready { Some(&svc().sc) } else { None };
+                        svc().yandex.match_tracks(&playlist, &local, sc).await
+                    })
+                    .await;
+                    let Some(matched) = matched else {
+                        status.set(Some((false, "Не удалось сопоставить треки".into())));
+                        busy.set(false);
+                        return;
+                    };
+                    let artwork_urls: Vec<String> = matched.iter().take(24).filter_map(|t| t.artwork.clone()).collect();
+                    let _ = bg(async move {
+                        stream::iter(artwork_urls)
+                            .map(|url| async move { let _ = svc().media.image_bytes(&url).await; })
+                            .buffer_unordered(4)
+                            .collect::<Vec<_>>()
+                            .await;
+                    })
+                    .await;
+                    let name = format!("Яндекс · {title}");
+                    let id = {
+                        let mut lib = st.library.write();
+                        let id = lib.create_playlist(&name);
+                        if let Some(p) = lib.playlists.iter_mut().find(|p| p.id == id) {
+                            p.tracks = matched;
+                        }
+                        id
+                    };
+                    let message = format!("Импортировано {count} треков из Яндекс Музыки");
+                    toast(st, ToastKind::Success, message.clone());
+                    status.set(Some((true, format!("{message}. Несопоставленные записи оставлены в плейлисте."))));
+                    busy.set(false);
+                    navigate(st, Route::LocalPlaylist(id));
+                }
+                Err(e) => {
+                    let message = if e.contains("451") || e.contains("401") {
+                        "Яндекс Музыка отклонила API-запрос. Вставьте OAuth-токен из сессии Яндекс Музыки и повторите импорт.".into()
+                    } else {
+                        e
+                    };
+                    status.set(Some((false, message)));
+                    busy.set(false);
+                }
+            }
+        });
+    };
+    rsx! {
+        div { class: "yandex-import",
+            p { class: "set-text", "Вставьте ссылку music.yandex.ru/users/.../playlists/... или music.yandex.ru/playlists/... — треки сопоставятся с локальной библиотекой и SoundCloud." }
+            div { class: "import-row",
+                input {
+                    class: "search-input import-input",
+                    r#type: "url",
+                    placeholder: "https://music.yandex.ru/users/.../playlists/...",
+                    value: "{url}",
+                    oninput: move |e: FormEvent| url.set(e.value()),
+                    onkeydown: move |e: KeyboardEvent| if e.key() == Key::Enter { import(()) },
+                }
+                button { class: "btn primary", disabled: *busy.read(), onclick: move |_| import(()), if *busy.read() { "Импортирую…" } else { "Импортировать" } }
+            }
+            div { class: "import-row yandex-token-row",
+                input {
+                    class: "search-input import-input",
+                    r#type: "password",
+                    placeholder: "OAuth-токен Яндекс Музыки (если API отвечает 401/451)",
+                    value: "{token}",
+                    oninput: move |e: FormEvent| token.set(e.value()),
+                }
+                button { class: "btn ghost", onclick: move |_| {
+                    svc().yandex.set_token(token.peek().trim());
+                    toast(st, ToastKind::Success, "Токен Яндекс Музыки сохранён локально");
+                }, "Сохранить токен" }
+            }
+            if let Some((ok, text)) = status.read().clone() {
+                div { class: if ok { "note ok" } else { "note err" }, "{text}" }
             }
         }
     }

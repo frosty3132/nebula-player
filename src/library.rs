@@ -27,6 +27,32 @@ pub struct SavedSession {
     pub position_ms: u64,
 }
 
+/// Время, реально проведённое в состоянии воспроизведения.
+/// `imported_ms` хранится отдельно, чтобы будущий импорт внешней истории не
+/// смешивал оценку с измерением локального плеера.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ListeningStats {
+    pub total_ms: u64,
+    pub imported_ms: u64,
+    pub by_track_ms: HashMap<String, u64>,
+}
+
+impl ListeningStats {
+    pub fn record(&mut self, track: &Track, delta_ms: u64) {
+        if delta_ms == 0 {
+            return;
+        }
+        self.total_ms = self.total_ms.saturating_add(delta_ms);
+        let entry = self.by_track_ms.entry(track.id.clone()).or_default();
+        *entry = entry.saturating_add(delta_ms);
+    }
+
+    pub fn total_with_imported(&self) -> u64 {
+        self.total_ms.saturating_add(self.imported_ms)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct LibraryData {
@@ -34,6 +60,7 @@ pub struct LibraryData {
     pub history: Vec<Track>,
     pub playlists: Vec<LocalPlaylist>,
     pub recent_searches: Vec<String>,
+    pub listening: ListeningStats,
 }
 
 const HISTORY_MAX: usize = 300;
@@ -85,6 +112,10 @@ impl LibraryData {
         self.history.retain(|x| x.id != t.id);
         self.history.insert(0, t.clone());
         self.history.truncate(HISTORY_MAX);
+    }
+
+    pub fn record_listening(&mut self, t: &Track, delta_ms: u64) {
+        self.listening.record(t, delta_ms);
     }
 
     pub fn push_search(&mut self, q: &str) {
@@ -265,5 +296,15 @@ mod tests {
         let t = read_track(Path::new("C:/nonexistent/Artist Name - Song Title.mp3"));
         assert_eq!(t.artist, "Artist Name");
         assert_eq!(t.title, "Song Title");
+    }
+
+    #[test]
+    fn listening_stats_accumulate_per_track() {
+        let mut lib = LibraryData::default();
+        let t = Track { id: "sc:1".into(), ..Default::default() };
+        lib.record_listening(&t, 1_500);
+        lib.record_listening(&t, 500);
+        assert_eq!(lib.listening.total_ms, 2_000);
+        assert_eq!(lib.listening.by_track_ms.get("sc:1"), Some(&2_000));
     }
 }

@@ -46,6 +46,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "env-filter"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 window-vibrancy = "0.8"
+discord-rich-presence = "1.1"
 
 [profile.dev]
 opt-level = 1

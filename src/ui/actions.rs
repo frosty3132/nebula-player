@@ -128,6 +128,12 @@ pub fn start_current(state: AppState, start_ms: u64, autoplay: bool) {
     s.preview.set(false);
     s.library.write().push_history(&track);
 
+    if let Some(url) = track.artwork.as_deref().map(|u| crate::model::sc_art_size(u, ArtSize::Large)) {
+        let _ = svc().rt.spawn(async move {
+            let _ = svc().media.image_bytes(&url).await;
+        });
+    }
+
     load_lyrics(state, &track);
     load_accent(state, &track);
 

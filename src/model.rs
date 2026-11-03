@@ -125,6 +125,20 @@ pub fn fmt_time(ms: u64) -> String {
     }
 }
 
+/// Человеческий формат суммарного времени прослушивания для карточек статистики.
+pub fn fmt_listening(ms: u64) -> String {
+    let minutes = ms / 60_000;
+    let hours = minutes / 60;
+    let mins = minutes % 60;
+    if hours > 0 {
+        format!("{hours} ч {mins:02} мин")
+    } else if mins > 0 {
+        format!("{mins} мин")
+    } else {
+        format!("{} с", ms / 1000)
+    }
+}
+
 pub fn fmt_count(n: u64) -> String {
     let short = |v: f64| {
         let s = format!("{v:.1}");
@@ -156,5 +170,7 @@ mod tests {
         assert_eq!(fmt_time(3_725_000), "1:02:05");
         assert_eq!(fmt_count(1_500), "1,5 тыс.");
         assert_eq!(fmt_count(2_000_000), "2 млн");
+        assert_eq!(fmt_listening(3_725_000), "1 ч 02 мин");
+        assert_eq!(fmt_listening(45_000), "45 с");
     }
 }

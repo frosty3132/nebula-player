@@ -231,6 +231,11 @@ fn InterfaceTab() -> Element {
             } } }
             Row { label: "Пульсация обложки в такт басу", Toggle { value: s.beat_glow, onchange: move |v| upd(st, |s| s.beat_glow = v) } }
         }
+        Card { title: "Discord Rich Presence", icon: "cloud",
+            p { class: "set-text", "Показывает текущий трек, исполнителя и состояние плеера в Discord. Нужен Application ID приложения Discord Developer Portal; если поле пустое, RPC выключен." }
+            Row { label: "Включить Discord RPC", Toggle { value: s.discord_rpc_enabled, onchange: move |v| upd(st, |s| s.discord_rpc_enabled = v) } }
+            Row { label: "Application ID", TextInput { value: s.discord_client_id.clone(), placeholder: "например, 123456789012345678", onchange: move |v| upd(st, |s| s.discord_client_id = v) } }
+        }
     }
 }
 
@@ -347,7 +352,7 @@ fn DevKeys() -> Element {
         p { class: "set-text",
             "Официальный API SoundCloud. Создайте приложение на "
             a { class: "link", onclick: move |_| { let _ = open::that("https://soundcloud.com/you/apps"); }, "soundcloud.com/you/apps" }
-            " (для регистрации приложений SoundCloud требует подписку Artist Pro), укажите в нём Redirect URI из поля ниже и вставьте ключи сюда. Если выполнен вход через сайт, используется он."
+            " (для регистрации приложений SoundCloud требует подписку Artist Pro), укажите в нём Redirect URI из поля ниже и вставьте ключи сюда."
         }
         Row { label: "Client ID", TextInput { value: id(), placeholder: "например, aBcD…", onchange: move |v| id.set(v) } }
         Row { label: "Client Secret", TextInput { value: secret(), password: true, placeholder: "секретный ключ", onchange: move |v| secret.set(v) } }

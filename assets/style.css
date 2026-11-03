@@ -196,6 +196,53 @@ video.bg-media { width: calc(100% + var(--bg-blur) * 4); height: calc(100% + var
 .app.sb-top .tb-right { justify-content: flex-end; }
 .app.sb-top .tb-center { flex: 0 0 auto; }
 
+/* ───────────────────────────── верхний мини-плеер ───────────────────────────── */
+
+.dynamic-island {
+  --di-top: 7px;
+  position: absolute;
+  z-index: 70;
+  top: var(--di-top);
+  left: 50%;
+  width: min(320px, calc(100% - 260px));
+  height: 38px;
+  transform: translateX(-50%);
+  overflow: hidden;
+  border-radius: 22px;
+  background: rgba(var(--surface-rgb), .9);
+  border: 1px solid rgba(var(--text-rgb), .12);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .28);
+  backdrop-filter: blur(calc(var(--blur) + 8px)) saturate(var(--saturate));
+  transition: width var(--t-med) var(--ease-out), height var(--t-med) var(--ease-out), border-radius var(--t-med), box-shadow var(--t-med);
+}
+.app.sb-top .dynamic-island { --di-top: 65px; }
+.dynamic-island::before { content: ""; position: absolute; inset: 0; background: var(--di-art) center / cover; opacity: .14; filter: blur(22px); transform: scale(1.15); pointer-events: none; }
+.dynamic-island:hover, .dynamic-island:focus-within { width: min(540px, calc(100% - 80px)); height: min(194px, calc(100vh - var(--di-top) - 14px)); border-radius: 28px; box-shadow: 0 16px 44px rgba(0, 0, 0, .4), var(--glow-shadow); }
+.di-collapsed, .di-expanded { position: absolute; inset: 0; z-index: 1; }
+.di-collapsed { display: flex; align-items: center; gap: 9px; padding: 4px 9px 4px 5px; }
+.di-expanded { display: flex; align-items: center; gap: 16px; padding: 14px 16px; opacity: 0; pointer-events: none; transform: translateY(-8px) scale(.98); transition: opacity var(--t-fast), transform var(--t-med) var(--ease-out); }
+.dynamic-island:hover .di-collapsed, .dynamic-island:focus-within .di-collapsed { opacity: 0; pointer-events: none; }
+.dynamic-island:hover .di-expanded, .dynamic-island:focus-within .di-expanded { opacity: 1; pointer-events: auto; transform: none; }
+.di-cover { width: 30px; height: 30px; border-radius: 10px; flex: 0 0 auto; }
+.di-cover-large { width: 84px; height: 84px; border-radius: 18px; flex: 0 0 auto; box-shadow: 0 8px 22px rgba(0,0,0,.3); }
+.di-meta { min-width: 0; flex: 1; }
+.di-title { font-weight: 700; font-size: .86em; }
+.di-artist { color: var(--muted); font-size: .76em; margin-top: 2px; }
+.di-bars { display: flex; align-items: end; gap: 2px; height: 16px; margin-left: auto; padding-right: 3px; }
+.di-bars span { width: 2px; height: 5px; border-radius: 2px; background: var(--accent); opacity: .6; }
+.di-bars.on span { animation: di-bars 800ms ease-in-out infinite alternate; }
+.di-bars.on span:nth-child(2) { animation-delay: -260ms; }
+.di-bars.on span:nth-child(3) { animation-delay: -520ms; }
+@keyframes di-bars { to { height: 14px; opacity: 1; } }
+.di-expanded-main { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 12px; }
+.di-controls { display: flex; align-items: center; gap: 5px; margin-top: auto; }
+.di-play { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; color: #fff; background: var(--accent-grad); box-shadow: var(--glow-shadow); }
+.di-play:hover { transform: scale(1.08); }
+.di-progress { display: flex; align-items: center; gap: 7px; }
+.di-progress .time { color: var(--muted); font-size: .68em; min-width: 30px; font-variant-numeric: tabular-nums; }
+.di-progress .time:last-child { text-align: right; }
+.di-progress input { flex: 1; min-width: 0; height: 4px; accent-color: var(--accent); }
+
 /* ───────────────────────────── верхняя панель-док ───────────────────────────── */
 
 .dock {
@@ -544,6 +591,22 @@ button.mini:hover { background: var(--hover-2); }
 .cont-text { flex: 1; min-width: 0; }
 .cont-title { font-weight: 700; font-size: 1.1em; }
 .cont-artist { color: var(--muted); }
+.listening-panel { display: grid; grid-template-columns: minmax(0, 1.15fr) 1px minmax(0, 1fr); align-items: center; gap: 24px; padding: 20px 24px; border-radius: var(--radius); }
+.listening-total, .listening-detail { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.listening-label { color: var(--accent); font-size: .76em; letter-spacing: .14em; text-transform: uppercase; font-weight: 700; }
+.listening-total strong { font-size: clamp(26px, 3vw, 38px); line-height: 1; font-variant-numeric: tabular-nums; }
+.listening-detail strong { font-size: 1.65em; font-variant-numeric: tabular-nums; }
+.listening-caption, .listening-top { color: var(--muted); font-size: .88em; }
+.listening-top { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.listening-divider { width: 1px; align-self: stretch; background: var(--border); }
+.listening-imported { grid-column: 1 / -1; color: var(--muted); font-size: .8em; }
+.yandex-import { display: flex; flex-direction: column; gap: 10px; padding: 16px 18px; border-radius: var(--radius); background: rgba(var(--surface-rgb), .45); border: 1px solid var(--border); }
+.yandex-import .set-text { margin: 0; }
+.import-row { display: flex; align-items: center; gap: 10px; }
+.yandex-token-row { opacity: .82; }
+.yandex-token-row .btn { flex: 0 0 auto; }
+.import-input { flex: 1; min-width: 0; padding: 11px 14px; border-radius: var(--btn-radius); background: rgba(var(--bg-rgb), .45); border: 1px solid var(--border); outline: none; }
+.import-input:focus { border-color: rgba(var(--accent-rgb), .7); box-shadow: var(--glow-shadow); }
 .home-foot { color: var(--muted); font-size: .8em; text-align: center; margin-top: 30px; opacity: .6; }
 
 /* ───────────────────────────── карточки ───────────────────────────── */
@@ -1086,6 +1149,12 @@ textarea, input { user-select: text; }
 @container content (max-width: 560px) {
   .ph-art { display: none; }
   .set-control { width: 100%; justify-content: flex-start; }
+  .import-row { flex-wrap: wrap; }
+  .import-row .btn { width: 100%; }
+}
+@media (max-width: 760px) {
+  .dynamic-island { width: min(260px, calc(100% - 150px)); }
+  .dynamic-island:hover, .dynamic-island:focus-within { width: calc(100% - 28px); }
 }
 @media (max-width: 1180px) {
   .lyrics { width: min(var(--lyrics-w), 320px); }

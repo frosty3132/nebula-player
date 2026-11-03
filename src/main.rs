@@ -6,6 +6,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio;
+mod discord;
 mod library;
 mod lyrics;
 mod media;
@@ -17,6 +18,7 @@ mod settings;
 mod soundcloud;
 mod theme;
 mod ui;
+mod yandex;
 
 use dioxus::desktop::tao::dpi::{LogicalSize, PhysicalPosition};
 use dioxus::desktop::tao::window::Icon;
@@ -134,8 +136,7 @@ fn main() {
         .with_data_directory(&p.webview)
         .with_disable_context_menu(!cfg!(debug_assertions))
         .with_windows_browser_args(browser_args)
-        // окно входа в SoundCloud живёт в этом же цикле событий; обработчики Dioxus
-        // получают события только своего окна, поэтому подключаемся на уровне цикла
+        // окно входа в SoundCloud живёт в этом же цикле событий
         .with_custom_event_handler(|event, target| sc_login::pump(event, target));
 
     dioxus::LaunchBuilder::desktop().with_cfg(cfg).launch(ui::App);

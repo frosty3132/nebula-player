@@ -6,12 +6,14 @@ use crate::lyrics::LyricsClient;
 use crate::media::Media;
 use crate::settings::Settings;
 use crate::soundcloud::SoundCloud;
+use crate::yandex::YandexMusic;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 pub struct Services {
     pub rt: tokio::runtime::Handle,
     pub sc: SoundCloud,
+    pub yandex: YandexMusic,
     pub lyrics: LyricsClient,
     pub media: Media,
     pub player: Player,
@@ -33,6 +35,7 @@ pub fn init(rt: tokio::runtime::Handle, settings: &Settings) -> &'static Service
         media.set_limit_mb(settings.image_cache_mb);
         Services {
             sc: SoundCloud::new(http.clone()),
+            yandex: YandexMusic::new(http.clone()),
             lyrics: LyricsClient::new(http.clone()),
             media,
             player,

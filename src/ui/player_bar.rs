@@ -12,12 +12,12 @@ use crate::theme::{Control, CoverShape, Extra, PlayerStyle};
 use dioxus::prelude::*;
 
 #[component]
-pub fn Cover(src: Option<String>, #[props(default)] class: String, #[props(default)] spinning: bool) -> Element {
+pub fn Cover(src: Option<String>, #[props(default)] class: String, #[props(default)] spinning: bool, #[props(default = "lazy".to_string())] loading: String) -> Element {
     rsx! {
         div { class: "cover {class}", "data-el": "cover",
             class: if spinning { "spin" },
             match src {
-                Some(s) => rsx! { img { src: "{s}", alt: "", loading: "lazy", decoding: "async", draggable: false } },
+                Some(s) => rsx! { img { src: "{s}", alt: "", loading: "{loading}", decoding: "async", draggable: false } },
                 None => rsx! { div { class: "cover-ph", Icon { name: "music", size: 22 } } },
             }
         }
@@ -43,6 +43,73 @@ pub fn PlayerBar() -> Element {
                 }
             }
             Extras { order: layout.extras.clone() }
+        }
+    }
+}
+
+/// Компактный верхний контроллер в стиле Dynamic Island.
+/// В свернутом виде он почти не отвлекает от контента, а при наведении
+/// раскрывает обложку, метаданные и основные действия плеера.
+#[component]
+pub fn DynamicIsland() -> Element {
+    let mut st = app_state();
+    let Some(track) = st.now.read().clone() else {
+        return rsx! {};
+    };
+    let playing = matches!(*st.pstate.read(), PlaybackState::Playing | PlaybackState::Buffering);
+    let pos = (*st.position.read() / 250) * 250;
+    let dur = *st.duration.read();
+    let pct = if dur > 0 { (pos as f64 / dur as f64 * 100.0).min(100.0) } else { 0.0 };
+    let art = track.art(ArtSize::Medium);
+    let bg_style = art.as_deref().map(|a| format!("--di-art: url('{a}');")).unwrap_or_default();
+    let track_for_menu = track.clone();
+    rsx! {
+        div { class: "dynamic-island", style: "{bg_style}", "data-el": "dynamic_island",
+            div { class: "di-collapsed",
+                Cover { src: art.clone(), class: "di-cover", loading: "eager" }
+                div { class: "di-meta",
+                    div { class: "di-title ellipsis", "{track.title}" }
+                    div { class: "di-artist ellipsis", "{track.artist}" }
+                }
+                span { class: if playing { "di-bars on" } else { "di-bars" },
+                    span {} span {} span {}
+                }
+            }
+            div { class: "di-expanded",
+                Cover { src: art, class: "di-cover-large", loading: "eager" }
+                div { class: "di-expanded-main",
+                    div { class: "di-meta",
+                        div { class: "di-title ellipsis", "{track.title}" }
+                        div { class: "di-artist ellipsis", "{track.artist}" }
+                    }
+                    div { class: "di-controls",
+                        IconBtn { icon: "prev", title: "Предыдущий", size: 18, onclick: move |_| prev(st) }
+                        button { class: "di-play", onclick: move |_| toggle_play(st), Icon { name: if playing { "pause" } else { "play" }, size: 18 } }
+                        IconBtn { icon: "next", title: "Следующий", size: 18, onclick: move |_| next(st, true) }
+                    }
+                    div { class: "di-progress",
+                        span { class: "time", "{fmt_time(pos)}" }
+                        input {
+                            r#type: "range",
+                            min: "0",
+                            max: "{dur.max(1)}",
+                            step: "250",
+                            value: "{pos}",
+                            style: "--di-p: {pct}%;",
+                            oninput: move |e: FormEvent| {
+                                if let Ok(v) = e.value().parse::<u64>() { seek(st, v); }
+                            },
+                        }
+                        span { class: "time", "{fmt_time(dur)}" }
+                    }
+                }
+                IconBtn { icon: "more", title: "Ещё", size: 18,
+                    onclick: move |e: MouseEvent| {
+                        let p = e.client_coordinates();
+                        st.menu.set(Some(MenuState { x: p.x, y: p.y + 12.0, track: track_for_menu.clone(), playlist: None, queue_index: None }));
+                    }
+                }
+            }
         }
     }
 }

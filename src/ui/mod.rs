@@ -18,6 +18,7 @@ mod tracks;
 mod widgets;
 
 use crate::audio::{PlaybackState, PlayerEvent};
+use crate::discord;
 use crate::library::{LibraryData, LocalIndex};
 use crate::services::svc;
 use crate::settings::{Settings, WindowEffect};
@@ -30,13 +31,13 @@ use dioxus::prelude::*;
 use lyrics_view::{FullscreenLyrics, LyricsPanel};
 use overlays::{ContextMenu, EditHint, ModalHost, QueuePanel, Toasts};
 use pages::*;
-use player_bar::{EqPanel, PlayerBar};
+use player_bar::{DynamicIsland, EqPanel, PlayerBar};
 use serde::Deserialize;
 use settings_page::SettingsPage;
 pub use state::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use theme_editor::Inspector;
 
 const BOOT_JS: &str = r#"
@@ -242,7 +243,7 @@ fn apply_window_effect(effect: WindowEffect, dark: bool) {
 
 #[component]
 pub fn App() -> Element {
-    let st = use_context_provider(|| {
+    let mut st = use_context_provider(|| {
         let settings = Settings::load();
         let themes = theme::load_all();
         let theme = themes.iter().find(|t| t.id == settings.theme).cloned().unwrap_or_else(|| themes[0].clone());
@@ -381,6 +382,14 @@ pub fn App() -> Element {
     // ── опрос состояния плеера: 10 Гц во время игры, ~3 Гц в паузе ──
     use_future(move || async move {
         let mut tick: u64 = 0;
+        let mut stats_load_id = 0u64;
+        let mut stats_track_id = String::new();
+        let mut stats_position = 0u64;
+        let mut stats_pending_ms = 0u64;
+        let mut stats_pending_track = None::<crate::model::Track>;
+        let mut stats_flush_at = Instant::now();
+        let mut rpc_key = None::<(String, bool)>;
+        let mut rpc_sent_at = Instant::now() - Duration::from_secs(30);
         loop {
             let active = st.pstate.peek().is_active();
             tokio::time::sleep(Duration::from_millis(if active { 100 } else { 330 })).await;
@@ -401,6 +410,73 @@ pub fn App() -> Element {
                 let b = (snap.buffered * 100.0).round() / 100.0;
                 if (*buf.peek() - b).abs() > f32::EPSILON {
                     buf.set(b);
+                }
+
+                // Позиция меняется и при перемотке, поэтому засчитываем только
+                // небольшие монотонные дельты в одном и том же треке/загрузке.
+                // Это не добавляет работу в аудиоколбэк и не создаёт запись на
+                // диске чаще, чем раз в несколько секунд.
+                if snap.load_id != stats_load_id && stats_pending_ms > 0 {
+                    if let Some(old_track) = stats_pending_track.take() {
+                        st.library.write().record_listening(&old_track, stats_pending_ms);
+                    }
+                    stats_pending_ms = 0;
+                    stats_flush_at = Instant::now();
+                }
+                let track_id = st.now.peek().as_ref().map(|t| t.id.clone()).unwrap_or_default();
+                if snap.state == PlaybackState::Playing {
+                    if snap.load_id == stats_load_id && track_id == stats_track_id {
+                        let delta = snap.position_ms.saturating_sub(stats_position);
+                        if delta <= 1_500 {
+                            if stats_pending_track.as_ref().is_some_and(|t| t.id != track_id) {
+                                if let Some(old_track) = stats_pending_track.take() {
+                                    st.library.write().record_listening(&old_track, stats_pending_ms);
+                                }
+                                stats_pending_ms = 0;
+                            }
+                            if stats_pending_track.is_none() {
+                                stats_pending_track = st.now.peek().clone();
+                            }
+                            stats_pending_ms = stats_pending_ms.saturating_add(delta);
+                        }
+                    }
+                    stats_load_id = snap.load_id;
+                    stats_track_id = track_id;
+                    stats_position = snap.position_ms;
+                }
+                if snap.state != PlaybackState::Playing && stats_pending_ms > 0 {
+                    if let Some(track) = stats_pending_track.take() {
+                        st.library.write().record_listening(&track, stats_pending_ms);
+                    }
+                    stats_pending_ms = 0;
+                    stats_flush_at = Instant::now();
+                }
+                if stats_pending_ms >= 1_000 && (stats_pending_ms >= 5_000 || stats_flush_at.elapsed() >= Duration::from_secs(5)) {
+                    if let Some(track) = stats_pending_track.take() {
+                        st.library.write().record_listening(&track, stats_pending_ms);
+                    }
+                    stats_pending_ms = 0;
+                    stats_flush_at = Instant::now();
+                }
+
+                let settings = st.settings.peek();
+                let rpc_enabled = settings.discord_rpc_enabled && !settings.discord_client_id.trim().is_empty();
+                let rpc_client_id = settings.discord_client_id.clone();
+                drop(settings);
+                if rpc_enabled {
+                    discord::init(&rpc_client_id);
+                    if let Some(track) = st.now.peek().clone() {
+                        let playing = snap.state == PlaybackState::Playing;
+                        let key = (track.id.clone(), playing);
+                        if rpc_key.as_ref() != Some(&key) || rpc_sent_at.elapsed() > Duration::from_secs(15) {
+                            discord::set_activity(&track.title, &track.artist, !playing);
+                            rpc_key = Some(key);
+                            rpc_sent_at = Instant::now();
+                        }
+                    }
+                } else if rpc_key.is_some() {
+                    discord::clear();
+                    rpc_key = None;
                 }
             }
             let s = st.settings.peek();
@@ -566,6 +642,7 @@ pub fn App() -> Element {
             Background {}
             div { class: "frame",
                 TitleBar {}
+                DynamicIsland {}
                 div { class: "body",
                     if layout.sidebar == SidebarPos::Left {
                         Sidebar {}
