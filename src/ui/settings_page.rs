@@ -4,10 +4,12 @@
 
 use super::actions::*;
 use super::icons::Icon;
+use super::sc_account::{self, LoginButton};
 use super::state::*;
 use super::theme_editor::{ElementsTab, LayoutTab, ThemesTab};
 use super::widgets::*;
 use crate::audio::{Player, EQ_FREQS};
+use crate::model::{image_url, sc_art_size, ArtSize};
 use crate::paths::paths;
 use crate::services::svc;
 use crate::settings::{LyricsAlign, Settings, StreamQuality, VolumeCurve, WindowEffect, EQ_PRESETS};
@@ -235,14 +237,72 @@ fn InterfaceTab() -> Element {
 #[component]
 fn AccountTab() -> Element {
     let st = app_state();
+    let user = st.sc_user.read().clone();
+    let web = svc().sc.web_mode();
+    let mut dev_open = use_signal(|| svc().sc.has_dev_keys() && !svc().sc.web_mode());
+    let dev_class = if dev_open() { "collapse-head open" } else { "collapse-head" };
+    rsx! {
+        Card { title: "Аккаунт SoundCloud", icon: "cloud",
+            match user {
+                Some(u) => {
+                    let avatar = u.avatar.as_deref().map(|a| image_url(&sc_art_size(a, ArtSize::Medium)));
+                    rsx! {
+                        div { class: "sc-account",
+                            div { class: "sc-avatar",
+                                match avatar {
+                                    Some(a) => rsx! { img { src: "{a}", alt: "", draggable: false } },
+                                    None => rsx! { Icon { name: "person", size: 30 } },
+                                }
+                            }
+                            div { class: "sc-acc-text",
+                                div { class: "sc-acc-name ellipsis", "{u.username}" }
+                                div { class: "set-hint", if web { "Вход через сайт SoundCloud" } else { "Вход через свои ключи API" } }
+                            }
+                            button { class: "btn ghost", "data-el": "button", onclick: move |_| sc_account::logout(st),
+                                Icon { name: "logout", size: 18 } "Выйти"
+                            }
+                        }
+                    }
+                }
+                None => rsx! {
+                    p { class: "set-text", "Войдите так же, как на сайте: откроется окно со страницей входа SoundCloud — по паролю, через Google или Apple. Ключи разработчика и подписки не нужны." }
+                    div { class: "set-actions", LoginButton { class: "big" } }
+                    p { class: "set-hint sc-login-note", "Nebula сохраняет только токен сессии и только на этом компьютере. Повторный вход — в один клик." }
+                },
+            }
+        }
+        Card { title: "Как это работает", icon: "info",
+            ul { class: "set-list",
+                li { "Пароль вводится на странице SoundCloud — Nebula его не видит и не хранит." }
+                li { "После входа работают поиск, жанры, похожие треки, ваши лайки, лента подписок и плейлисты." }
+                li { "Nebula обращается к тому же API, что и сайт soundcloud.com. Это неофициальный способ: если SoundCloud изменит сайт, может понадобиться обновление Nebula." }
+                li { "Треки с ограничениями правообладателя SoundCloud отдаёт только как 30-секундное превью — Nebula помечает их." }
+            }
+        }
+        section { class: "set-card glass",
+            button { class: "{dev_class}", onclick: move |_| dev_open.toggle(),
+                span { class: "set-card-title", Icon { name: "code", size: 18 } "Свои ключи API (для разработчиков)" }
+                Icon { name: "down", size: 18 }
+            }
+            if dev_open() {
+                DevKeys {}
+            }
+        }
+    }
+}
+
+/// Официальный API SoundCloud со своими ключами (нужна подписка Artist Pro).
+#[component]
+fn DevKeys() -> Element {
+    let st = app_state();
     let (id0, secret0, redirect0) = svc().sc.credentials();
     let mut id = use_signal(|| id0.clone());
     let mut secret = use_signal(|| secret0.clone());
     let mut redirect = use_signal(|| redirect0.clone());
     let mut busy = use_signal(|| false);
     let mut status = use_signal(|| None::<(bool, String)>);
-    let user = st.sc_user.read().clone();
-    let ready = *st.sc_ready.read();
+    let has_keys = svc().sc.has_dev_keys();
+    let logged_in = st.sc_user.read().is_some();
 
     let save = move |_| {
         svc().sc.set_credentials(&id.peek(), &secret.peek(), &redirect.peek());
@@ -250,6 +310,10 @@ fn AccountTab() -> Element {
         r.set(svc().sc.configured());
         let mut u = st.sc_user;
         u.set(svc().sc.user());
+        if svc().sc.web_mode() {
+            status.set(Some((true, "Ключи сохранены. Пока выполнен вход через сайт, используется он".into())));
+            return;
+        }
         busy.set(true);
         status.set(None);
         spawn(async move {
@@ -280,48 +344,27 @@ fn AccountTab() -> Element {
         });
     };
     rsx! {
-        Card { title: "Подключение SoundCloud", icon: "cloud",
-            p { class: "set-text",
-                "Nebula работает через официальный API SoundCloud. Создайте приложение на "
-                a { class: "link", onclick: move |_| { let _ = open::that("https://soundcloud.com/you/apps"); }, "soundcloud.com/you/apps" }
-                " (для регистрации приложений SoundCloud требует подписку Artist Pro), укажите в нём Redirect URI из поля ниже и вставьте ключи сюда. Ключи хранятся только на этом компьютере."
+        p { class: "set-text",
+            "Официальный API SoundCloud. Создайте приложение на "
+            a { class: "link", onclick: move |_| { let _ = open::that("https://soundcloud.com/you/apps"); }, "soundcloud.com/you/apps" }
+            " (для регистрации приложений SoundCloud требует подписку Artist Pro), укажите в нём Redirect URI из поля ниже и вставьте ключи сюда. Если выполнен вход через сайт, используется он."
+        }
+        Row { label: "Client ID", TextInput { value: id(), placeholder: "например, aBcD…", onchange: move |v| id.set(v) } }
+        Row { label: "Client Secret", TextInput { value: secret(), password: true, placeholder: "секретный ключ", onchange: move |v| secret.set(v) } }
+        Row { label: "Redirect URI", hint: "Должен совпадать с указанным в приложении SoundCloud",
+            TextInput { value: redirect(), onchange: move |v| redirect.set(v) }
+        }
+        div { class: "set-actions",
+            button { class: "btn", disabled: *busy.read(), onclick: save, Icon { name: "save", size: 18 } "Сохранить и проверить" }
+            if has_keys && !logged_in {
+                button { class: "btn ghost", disabled: *busy.read(), onclick: login, Icon { name: "login", size: 18 } "Войти по ключам" }
             }
-            Row { label: "Client ID", TextInput { value: id(), placeholder: "например, aBcD…", onchange: move |v| id.set(v) } }
-            Row { label: "Client Secret", TextInput { value: secret(), password: true, placeholder: "секретный ключ", onchange: move |v| secret.set(v) } }
-            Row { label: "Redirect URI", hint: "Должен совпадать с указанным в приложении SoundCloud",
-                TextInput { value: redirect(), onchange: move |v| redirect.set(v) }
-            }
-            div { class: "set-actions",
-                button { class: "btn primary", disabled: *busy.read(), onclick: save, Icon { name: "save", size: 18 } "Сохранить и проверить" }
-                if ready && user.is_none() {
-                    button { class: "btn", disabled: *busy.read(), onclick: login, Icon { name: "login", size: 18 } "Войти в аккаунт" }
-                }
-                if user.is_some() {
-                    button { class: "btn ghost",
-                        onclick: move |_| {
-                            svc().sc.logout();
-                            let mut u = st.sc_user;
-                            u.set(None);
-                            toast(st, ToastKind::Info, "Вы вышли из аккаунта SoundCloud");
-                        },
-                        Icon { name: "logout", size: 18 } "Выйти"
-                    }
-                }
-                if *busy.read() { Spinner {} }
-            }
-            if let Some((ok, text)) = status.read().clone() {
-                div { class: if ok { "note ok" } else { "note err" }, "{text}" }
-            }
-            if let Some(u) = user {
-                div { class: "note ok", "Аккаунт: {u.username}" }
+            if *busy.read() {
+                Spinner {}
             }
         }
-        Card { title: "Что даёт вход в аккаунт", icon: "info",
-            ul { class: "set-list",
-                li { "Без входа: поиск, жанры, плейлисты, исполнители, похожие треки и прослушивание." }
-                li { "После входа: ваши лайки, лента подписок и плейлисты в разделе «Мой SoundCloud»." }
-                li { "Треки с ограничениями правообладателя SoundCloud отдаёт только как 30-секундное превью — Nebula помечает их." }
-            }
+        if let Some((ok, text)) = status.read().clone() {
+            div { class: if ok { "note ok" } else { "note err" }, "{text}" }
         }
     }
 }

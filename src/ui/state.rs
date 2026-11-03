@@ -364,6 +364,8 @@ pub struct AppState {
     pub level: Signal<f32>,
     pub sc_ready: Signal<bool>,
     pub sc_user: Signal<Option<UserInfo>>,
+    /// Открыто окно входа в SoundCloud и мы ждём сессию.
+    pub sc_login_busy: Signal<bool>,
     pub closing: Signal<bool>,
     pub reopening: Signal<bool>,
     pub search_query: Signal<String>,

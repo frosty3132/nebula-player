@@ -11,6 +11,7 @@ mod lyrics;
 mod media;
 mod model;
 mod paths;
+mod sc_login;
 mod services;
 mod settings;
 mod soundcloud;
@@ -22,6 +23,7 @@ use dioxus::desktop::tao::window::Icon;
 use dioxus::desktop::{Config, WindowBuilder};
 
 const BASE_CSS: &str = include_str!("../assets/style.css");
+const LOGIN_CSS: &str = include_str!("../assets/login.css");
 
 fn init_logging(p: &paths::Paths) {
     let file = std::fs::OpenOptions::new().create(true).append(true).open(p.cache.join("nebula.log"));
@@ -128,10 +130,13 @@ fn main() {
     let cfg = Config::new()
         .with_window(wb)
         .with_background_color((0, 0, 0, 0))
-        .with_custom_head(format!("<meta name=\"color-scheme\" content=\"dark light\"><style>{BASE_CSS}</style>"))
+        .with_custom_head(format!("<meta name=\"color-scheme\" content=\"dark light\"><style>{BASE_CSS}{LOGIN_CSS}</style>"))
         .with_data_directory(&p.webview)
         .with_disable_context_menu(!cfg!(debug_assertions))
-        .with_windows_browser_args(browser_args);
+        .with_windows_browser_args(browser_args)
+        // окно входа в SoundCloud живёт в этом же цикле событий; обработчики Dioxus
+        // получают события только своего окна, поэтому подключаемся на уровне цикла
+        .with_custom_event_handler(|event, target| sc_login::pump(event, target));
 
     dioxus::LaunchBuilder::desktop().with_cfg(cfg).launch(ui::App);
 }

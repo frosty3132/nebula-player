@@ -281,12 +281,19 @@ pub fn Sidebar() -> Element {
                 if !compact {
                     button {
                         class: "sc-chip",
-                        onclick: move |_| navigate(st, Route::Settings(SettingsTab::Account)),
+                        // без аккаунта кнопка сразу открывает окно входа SoundCloud
+                        onclick: move |_| {
+                            if st.sc_user.peek().is_some() {
+                                navigate(st, Route::SoundCloud)
+                            } else {
+                                super::sc_account::start_login(st)
+                            }
+                        },
                         span { class: if sc_ready { "dot on" } else { "dot" } }
                         match user {
                             Some(u) => rsx! { span { "{u.username}" } },
-                            None if sc_ready => rsx! { span { "SoundCloud подключён" } },
-                            None => rsx! { span { "Подключить SoundCloud" } },
+                            None if *st.sc_login_busy.read() => rsx! { span { "Жду вход в SoundCloud…" } },
+                            None => rsx! { span { "Войти в SoundCloud" } },
                         }
                     }
                 }

@@ -10,6 +10,7 @@ mod lyrics_view;
 mod overlays;
 mod pages;
 mod player_bar;
+mod sc_account;
 mod settings_page;
 mod state;
 mod theme_editor;
@@ -282,6 +283,7 @@ pub fn App() -> Element {
             level: Signal::new(0.0),
             sc_ready: Signal::new(svc().sc.configured()),
             sc_user: Signal::new(svc().sc.user()),
+            sc_login_busy: Signal::new(false),
             closing: Signal::new(false),
             reopening: Signal::new(false),
             search_query: Signal::new(String::new()),
@@ -416,6 +418,9 @@ pub fn App() -> Element {
             }
             if active && tick % 5 == 0 {
                 maybe_preload(st);
+            }
+            if tick % 10 == 0 {
+                sc_account::check_expired(st);
             }
             if tick % 120 == 0 && st.now.peek().is_some() {
                 save_session(st);
