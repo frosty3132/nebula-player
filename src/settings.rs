@@ -180,7 +180,7 @@ impl Default for Settings {
             lyrics_width: 380.0,
             lyrics_autoscroll: true,
             lyrics_translit: false,
-            theme: "galaxy".into(),
+            theme: "black".into(),
             ui_scale: 1.0,
             animations: true,
             anim_speed: 1.0,
@@ -306,6 +306,6 @@ mod tests {
     fn unknown_fields_are_tolerated() {
         let s: Settings = serde_json::from_str(r#"{"volume": 1.5, "something_new": 1}"#).unwrap();
         assert_eq!(s.volume, 1.5);
-        assert_eq!(s.theme, "galaxy");
+        assert_eq!(s.theme, "black");
     }
 }

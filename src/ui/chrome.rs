@@ -5,7 +5,7 @@ use super::actions::{go_back, go_forward, navigate, save_session};
 use super::icons::{Icon, LOGO_SVG};
 use super::state::*;
 use super::widgets::IconBtn;
-use crate::theme::{SidebarPos, NAV_ITEMS};
+use crate::theme::{Entry, SidebarPos, NAV_ITEMS};
 use dioxus::desktop::tao::window::ResizeDirection;
 use dioxus::core::spawn_forever;
 use dioxus::desktop::window;
@@ -76,7 +76,8 @@ pub fn TitleBar() -> Element {
     let can_back = !st.back.read().is_empty();
     let can_fwd = !st.forward.read().is_empty();
     let edit = *st.edit_mode.read();
-    let sidebar_hidden = layout.sidebar == SidebarPos::Hidden;
+    // «Hidden» из старых тем показываем так же, как верхнюю панель
+    let top_dock = matches!(layout.sidebar, SidebarPos::Top | SidebarPos::Hidden);
 
     let mut max_sig = maximized;
     rsx! {
@@ -93,7 +94,7 @@ pub fn TitleBar() -> Element {
                 max_sig.set(window().is_maximized());
             },
             div { class: "tb-left",
-                if sidebar_hidden || layout.titlebar_title {
+                if top_dock || layout.titlebar_title {
                     div { class: "tb-brand",
                         span { class: "tb-logo", dangerous_inner_html: LOGO_SVG }
                         span { class: "tb-name", "Nebula" }
@@ -105,19 +106,8 @@ pub fn TitleBar() -> Element {
                 }
             }
             div { class: "tb-center",
-                if sidebar_hidden {
-                    for entry in layout.nav.iter().filter(|e| e.visible) {
-                        if let Some((id, label, icon)) = NAV_ITEMS.iter().find(|n| n.0 == entry.id) {
-                            IconBtn {
-                                icon: icon.to_string(),
-                                title: label.to_string(),
-                                size: 18,
-                                active: route.nav_id() == *id,
-                                onclick: move |_| navigate(st, Route::from_nav(id)),
-                            }
-                        }
-                    }
-                    IconBtn { icon: "settings", title: "Настройки", size: 18, active: matches!(route, Route::Settings(_)), onclick: move |_| navigate(st, Route::Settings(SettingsTab::Sound)) }
+                if top_dock {
+                    Dock { nav: layout.nav.clone(), route: route.clone() }
                 }
             }
             div { class: "tb-right",
@@ -162,6 +152,45 @@ pub fn TitleBar() -> Element {
                         Icon { name: "close", size: 16 }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Верхняя панель-док: значки разделов. При наведении значок пружинисто
+/// увеличивается (соседи — чуть меньше, как в доке), покачивается и показывает подпись.
+/// Всё на CSS (`scale`/`translate`/`rotate`) — работает на GPU-композиторе.
+#[component]
+fn Dock(nav: Vec<Entry>, route: Route) -> Element {
+    let st = app_state();
+    let settings_active = matches!(route, Route::Settings(_));
+    rsx! {
+        nav { class: "dock", "data-el": "nav",
+            for entry in nav.iter().filter(|e| e.visible) {
+                if let Some((id, label, icon)) = NAV_ITEMS.iter().find(|n| n.0 == entry.id) {
+                    button {
+                        key: "{id}",
+                        class: if route.nav_id() == *id { "dock-item active" } else { "dock-item" },
+                        "data-el": "nav_item",
+                        "aria-label": "{label}",
+                        onmousedown: move |e| e.stop_propagation(),
+                        ondoubleclick: move |e| e.stop_propagation(),
+                        onclick: move |_| navigate(st, Route::from_nav(id)),
+                        span { class: "dock-icon", Icon { name: icon.to_string(), size: 21 } }
+                        span { class: "dock-label", "{label}" }
+                    }
+                }
+            }
+            span { class: "dock-sep" }
+            button {
+                class: if settings_active { "dock-item active" } else { "dock-item" },
+                "data-el": "nav_item",
+                "aria-label": "Настройки",
+                onmousedown: move |e| e.stop_propagation(),
+                ondoubleclick: move |e| e.stop_propagation(),
+                onclick: move |_| navigate(st, Route::Settings(SettingsTab::Sound)),
+                span { class: "dock-icon", Icon { name: "settings", size: 21 } }
+                span { class: "dock-label", "Настройки" }
             }
         }
     }

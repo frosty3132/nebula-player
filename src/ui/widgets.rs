@@ -178,6 +178,8 @@ pub fn IconBtn(
             "data-el": "button",
             title: "{title}",
             onmousedown: move |e| e.stop_propagation(),
+            // двойной клик по кнопке в заголовке не должен разворачивать окно
+            ondoubleclick: move |e| e.stop_propagation(),
             onclick: move |e| {
                 e.stop_propagation();
                 onclick.call(e)

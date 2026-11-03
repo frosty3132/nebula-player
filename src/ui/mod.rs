@@ -505,7 +505,7 @@ pub fn App() -> Element {
         match layout.sidebar {
             SidebarPos::Left => "sb-left",
             SidebarPos::Right => "sb-right",
-            SidebarPos::Hidden => "sb-hidden",
+            SidebarPos::Top | SidebarPos::Hidden => "sb-top",
         },
         match layout.player {
             PlayerPos::Bottom => "pl-bottom",

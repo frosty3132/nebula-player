@@ -154,9 +154,12 @@ impl Default for Stars {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SidebarPos {
+    /// Панель-док со значками в заголовке окна
     #[default]
+    Top,
     Left,
     Right,
+    /// Устаревшее значение старых тем — отображается как `Top`
     Hidden,
 }
 
@@ -301,7 +304,7 @@ pub struct Layout {
 impl Default for Layout {
     fn default() -> Self {
         Self {
-            sidebar: SidebarPos::Left,
+            sidebar: SidebarPos::Top,
             sidebar_width: 236.0,
             sidebar_compact: false,
             player: PlayerPos::Bottom,
@@ -588,8 +591,14 @@ impl Theme {
         let anim = if s.animations && !s.low_power { s.anim_speed } else { 0.0 };
         let blur = if s.low_power { (self.glass.blur * 0.4).round() } else { self.glass.blur };
 
+        // цвет текста и значков поверх акцента: на светлом акценте — тёмный
+        let (ar, ag, ab) = hex_rgb(accent, (139, 92, 246));
+        let luma = 0.2126 * ar as f32 + 0.7152 * ag as f32 + 0.0722 * ab as f32;
+        let on_accent = if luma > 160.0 { "#0b0b0b" } else { "#ffffff" };
+
         let _ = writeln!(css, ":root{{");
-        let vars: [(&str, String); 47] = [
+        let vars: [(&str, String); 48] = [
+            ("--on-accent", on_accent.to_string()),
             ("--bg", c.bg.clone()),
             ("--bg-rgb", rgb_str(hex_rgb(&c.bg, (5, 3, 15)))),
             ("--surface-rgb", rgb_str(hex_rgb(&c.surface, (20, 15, 43)))),
@@ -665,6 +674,25 @@ fn theme(id: &str, name: &str, f: impl FnOnce(&mut Theme)) -> Theme {
 
 pub fn builtin_themes() -> Vec<Theme> {
     vec![
+        theme("black", "Чёрная", |t| {
+            // обычная чёрная тема: без звёзд, туманностей, свечения и прозрачности
+            t.colors = Colors {
+                bg: "#000000".into(),
+                surface: "#0e0e0e".into(),
+                surface2: "#171717".into(),
+                text: "#f2f2f2".into(),
+                muted: "#8e8e8e".into(),
+                accent: "#ffffff".into(),
+                accent2: "#c8c8c8".into(),
+                glow: "#ffffff".into(),
+                danger: "#ff5c5c".into(),
+                border: "rgba(255,255,255,0.08)".into(),
+            };
+            t.shape = Shape { radius: 14.0, radius_small: 10.0, radius_large: 20.0, border_width: 1.0, cover_radius: 8.0, button_radius: 999.0 };
+            t.glass = Glass { blur: 0.0, opacity: 0.94, saturation: 100.0, window_opacity: 1.0, glow: 0.0 };
+            t.background = Background { kind: BgKind::Solid, nebula: false, dim: 0.0, ..Background::default() };
+            t.stars = Stars { density: 0.0, twinkle: false, shooting: false, ..Stars::default() };
+        }),
         theme("galaxy", "Галактика", |_| {}),
         theme("orion", "Туманность Ориона", |t| {
             t.colors = Colors {
@@ -712,7 +740,6 @@ pub fn builtin_themes() -> Vec<Theme> {
                 glow: "#fb923c".into(),
                 ..Colors::default()
             };
-            t.layout.sidebar = SidebarPos::Right;
             t.layout.cover_shape = CoverShape::Vinyl;
             t.stars.speed = 1.8;
         }),
@@ -878,6 +905,14 @@ mod tests {
         let mut s = String::new();
         st.write_css("x", &mut s);
         assert!(!s.contains("body{"), "{s}");
+    }
+
+    #[test]
+    fn text_on_light_accent_is_dark() {
+        let black = builtin_themes().into_iter().find(|t| t.id == "black").unwrap();
+        assert!(black.css(&Settings::default(), None).contains("--on-accent: #0b0b0b;"));
+        assert!(Theme::default().css(&Settings::default(), None).contains("--on-accent: #ffffff;"));
+        assert_eq!(Layout::default().sidebar, SidebarPos::Top);
     }
 
     #[test]

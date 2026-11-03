@@ -350,9 +350,12 @@ pub fn LayoutTab() -> Element {
 
     rsx! {
         Card { title: "Панели", icon: "layout",
-            Row { label: "Боковое меню",
-                Seg { value: format!("{:?}", l.sidebar), options: opts(&[("Left", "Слева"), ("Right", "Справа"), ("Hidden", "Скрыто (иконки в заголовке)")]),
-                    onchange: move |v: String| edit(st, |t| t.layout.sidebar = match v.as_str() { "Right" => SidebarPos::Right, "Hidden" => SidebarPos::Hidden, _ => SidebarPos::Left }) }
+            Row { label: "Меню разделов", hint: "Сверху — панель-док со значками, которые увеличиваются при наведении",
+                Seg {
+                    value: if l.sidebar == SidebarPos::Hidden { "Top".to_string() } else { format!("{:?}", l.sidebar) },
+                    options: opts(&[("Top", "Сверху (значки)"), ("Left", "Слева"), ("Right", "Справа")]),
+                    onchange: move |v: String| edit(st, |t| t.layout.sidebar = match v.as_str() { "Left" => SidebarPos::Left, "Right" => SidebarPos::Right, _ => SidebarPos::Top }),
+                }
             }
             Row { label: "Компактное меню (только иконки)", Toggle { value: l.sidebar_compact, onchange: move |v| edit(st, |t| t.layout.sidebar_compact = v) } }
             Row { label: "Ширина меню", Slider { value: l.sidebar_width, min: 180.0, max: 360.0, step: 4.0, unit: " px", oninput: move |v| edit(st, |t| t.layout.sidebar_width = v) } }

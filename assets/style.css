@@ -190,6 +190,107 @@ video.bg-media { width: calc(100% + var(--bg-blur) * 4); height: calc(100% + var
 }
 .tb-left, .tb-right, .tb-center { display: flex; align-items: center; gap: 6px; }
 .tb-center { flex: 1; justify-content: center; }
+.app.sb-top .titlebar { height: 58px; z-index: 40; }
+.app.sb-top .edit-hint { top: 68px; }
+.app.sb-top .tb-left, .app.sb-top .tb-right { flex: 1; min-width: 0; }
+.app.sb-top .tb-right { justify-content: flex-end; }
+.app.sb-top .tb-center { flex: 0 0 auto; }
+
+/* ───────────────────────────── верхняя панель-док ───────────────────────────── */
+
+.dock {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 46px;
+  padding: 0 8px;
+  border-radius: 18px;
+  background: var(--glass-bg);
+  border: var(--border-w) solid var(--border);
+  backdrop-filter: blur(var(--blur)) saturate(var(--saturate));
+  position: relative;
+  z-index: 30;
+}
+.dock-sep { width: 1px; height: 24px; margin: 0 6px; background: var(--border); flex: 0 0 auto; }
+.dock-item {
+  position: relative;
+  width: 42px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.dock-icon {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  transform-origin: 50% 15%;
+  will-change: scale;
+  transition:
+    scale calc(380ms * var(--anim, 1)) cubic-bezier(.34, 1.56, .64, 1),
+    translate calc(380ms * var(--anim, 1)) cubic-bezier(.34, 1.56, .64, 1),
+    color var(--t-fast),
+    background var(--t-fast),
+    box-shadow var(--t-med);
+}
+/* увеличение «как в доке»: наведённый значок больше всех, соседи — чуть меньше */
+.dock-item:hover .dock-icon {
+  scale: 1.6;
+  translate: 0 7px;
+  color: var(--text);
+  background: var(--glass-bg-2);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .45), 0 0 calc(20px * var(--glow-k)) rgba(var(--accent-rgb), calc(.6 * var(--glow-k)));
+}
+.dock-item:hover + .dock-item .dock-icon,
+.dock-item:has(+ .dock-item:hover) .dock-icon { scale: 1.28; translate: 0 3px; color: var(--text); }
+.dock-item:hover + .dock-item + .dock-item .dock-icon,
+.dock-item:has(+ .dock-item + .dock-item:hover) .dock-icon { scale: 1.1; translate: 0 1px; }
+.dock-item:hover .dock-icon .icon { animation: dock-jiggle calc(620ms * var(--anim, 1)) ease-in-out; }
+.dock-item:active .dock-icon { scale: 1.35; transition-duration: 90ms; }
+@keyframes dock-jiggle {
+  0% { rotate: 0deg; }
+  20% { rotate: -14deg; }
+  45% { rotate: 10deg; }
+  70% { rotate: -5deg; }
+  100% { rotate: 0deg; }
+}
+.dock-item.active { color: var(--accent); }
+.dock-item.active .dock-icon { color: var(--accent); background: rgba(var(--accent-rgb), .14); }
+.dock-item.active::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -4px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  translate: -50% 0;
+  background: var(--accent);
+  box-shadow: var(--glow-shadow);
+}
+.dock-label {
+  position: absolute;
+  top: calc(100% + 26px);
+  left: 50%;
+  translate: -50% -6px;
+  padding: 5px 10px;
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--text);
+  background: var(--glass-bg-2);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 40;
+  transition: opacity var(--t-fast), translate var(--t-med) var(--ease-out);
+}
+.dock-item:hover .dock-label { opacity: 1; translate: -50% 0; transition-delay: 120ms; }
 .tb-brand { display: flex; align-items: center; gap: 8px; margin-right: 8px; }
 .tb-logo { width: 22px; height: 22px; display: grid; }
 .tb-logo svg, .logo-mark svg, .about-logo svg { width: 100%; height: 100%; }
@@ -340,7 +441,7 @@ video.bg-media { width: calc(100% + var(--bg-blur) * 4); height: calc(100% + var
 }
 .btn:hover { background: rgba(var(--text-rgb), .16); }
 .btn:active { transform: scale(.97); }
-.btn.primary { background: var(--accent-grad); color: #fff; box-shadow: var(--glow-shadow); }
+.btn.primary { background: var(--accent-grad); color: var(--on-accent); box-shadow: var(--glow-shadow); }
 .btn.primary:hover { filter: brightness(1.1); box-shadow: 0 0 calc(36px * var(--glow-k)) rgba(var(--accent-rgb), calc(.75 * var(--glow-k))); }
 .btn.ghost { background: transparent; border: 1px solid var(--border); }
 .btn.ghost:hover { background: var(--hover); }
@@ -372,7 +473,7 @@ button.mini:hover { background: var(--hover-2); }
   max-width: 100%;
 }
 .chip:hover { color: var(--text); background: var(--hover-2); }
-.chip.active { color: #fff; background: var(--accent-grad); border-color: transparent; box-shadow: var(--glow-shadow); }
+.chip.active { color: var(--on-accent); background: var(--accent-grad); border-color: transparent; box-shadow: var(--glow-shadow); }
 .chip.static { cursor: default; }
 .chip-x { margin-left: 2px; opacity: .6; font-size: 1.2em; line-height: 1; }
 .chip-x:hover { opacity: 1; color: var(--danger); }
@@ -478,7 +579,7 @@ button.mini:hover { background: var(--hover-2); }
   border-radius: 50%;
   display: grid;
   place-items: center;
-  color: #fff;
+  color: var(--on-accent);
   background: var(--accent-grad);
   box-shadow: var(--glow-shadow);
   opacity: 0;
@@ -586,7 +687,7 @@ button.mini:hover { background: var(--hover-2); }
 .empty { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 60px 20px; gap: 6px; color: var(--muted); }
 .empty h3 { margin: 10px 0 0; color: var(--text); font-size: 1.2em; }
 .empty p { margin: 0 0 12px; max-width: 440px; line-height: 1.5; }
-.empty-orb { width: 74px; height: 74px; border-radius: 50%; display: grid; place-items: center; color: #fff; background: var(--accent-grad); box-shadow: var(--glow-shadow); animation: float-y calc(4s * var(--anim, 1)) ease-in-out infinite alternate; }
+.empty-orb { width: 74px; height: 74px; border-radius: 50%; display: grid; place-items: center; color: var(--on-accent); background: var(--accent-grad); box-shadow: var(--glow-shadow); animation: float-y calc(4s * var(--anim, 1)) ease-in-out infinite alternate; }
 
 .spinner { display: inline-flex; gap: 5px; }
 .spinner span { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: dot 1s ease-in-out infinite; }
@@ -641,7 +742,7 @@ button.mini:hover { background: var(--hover-2); }
   border-radius: 50%;
   display: grid;
   place-items: center;
-  color: #fff;
+  color: var(--on-accent);
   background: var(--accent-grad);
   box-shadow: var(--glow-shadow);
   transition: transform var(--t-fast), box-shadow var(--t-med), filter var(--t-fast);
@@ -904,7 +1005,7 @@ textarea, input { user-select: text; }
 .toggle { position: relative; width: 46px; height: 26px; border-radius: 26px; background: rgba(var(--text-rgb), .18); flex: 0 0 auto; transition: background var(--t-med); }
 .toggle .knob { position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgba(0, 0, 0, .35); transition: transform var(--t-med) var(--ease-out); }
 .toggle.on { background: var(--accent-grad); box-shadow: var(--glow-shadow); }
-.toggle.on .knob { transform: translateX(20px); }
+.toggle.on .knob { transform: translateX(20px); background: var(--on-accent); }
 
 .slider { display: flex; align-items: center; gap: 12px; width: 300px; max-width: 100%; }
 .slider-track { position: relative; flex: 1; display: flex; align-items: center; }
@@ -917,7 +1018,7 @@ textarea, input { user-select: text; }
 .seg { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 3px; border-radius: 999px; background: rgba(var(--bg-rgb), .45); border: 1px solid var(--border); }
 .seg-btn { padding: 6px 13px; border-radius: 999px; color: var(--muted); font-weight: 600; font-size: .86em; transition: all var(--t-fast); white-space: nowrap; }
 .seg-btn:hover { color: var(--text); }
-.seg-btn.active { background: var(--accent-grad); color: #fff; box-shadow: var(--glow-shadow); }
+.seg-btn.active { background: var(--accent-grad); color: var(--on-accent); box-shadow: var(--glow-shadow); }
 
 .color-input { display: flex; align-items: center; gap: 8px; }
 .color-input input[type=color] { width: 38px; height: 34px; padding: 0; border: 1px solid var(--border); border-radius: 10px; background: none; cursor: pointer; }
