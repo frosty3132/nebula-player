@@ -124,6 +124,70 @@ const scanGlide = (n) => {
 new MutationObserver((recs) => { for (const r of recs) r.addedNodes.forEach(scanGlide); })
   .observe(document.getElementById("main") || document.body, { childList: true, subtree: true });
 scanGlide(document.body);
+
+// Плавная прокрутка колесом мыши: щелчок колеса не прыгает, а мягко докатывает
+// список к цели. Тачпад (мелкие шаги) и Ctrl/Shift+колесо остаются системными,
+// в экономном режиме и без анимаций — обычная прокрутка.
+const smoothState = new WeakMap();
+const canScrollY = (el) => {
+  if (el.scrollHeight <= el.clientHeight + 1) return false;
+  const oy = getComputedStyle(el).overflowY;
+  return oy === "auto" || oy === "scroll";
+};
+const scrollerFor = (start, dy) => {
+  for (let el = start; el && el !== document.body; el = el.parentElement) {
+    if (el.nodeType !== 1 || !canScrollY(el)) continue;
+    const s = smoothState.get(el);
+    const pos = s ? s.target : el.scrollTop;
+    const max = el.scrollHeight - el.clientHeight;
+    // упёрлись в край — прокрутку получает внешний контейнер
+    if ((dy > 0 && pos < max - 1) || (dy < 0 && pos > 1)) return el;
+  }
+  return null;
+};
+const animateScroll = (el) => {
+  const s = smoothState.get(el);
+  let prev = performance.now();
+  const step = (now) => {
+    // пользователь тянет ползунок или жмёт клавиши — уступаем
+    if (Math.abs(el.scrollTop - s.last) > 2) { smoothState.delete(el); return; }
+    const dt = Math.min(64, now - prev); prev = now;
+    const k = 1 - Math.pow(1 - 0.16, dt / 16.67);
+    const cur = el.scrollTop;
+    let next = cur + (s.target - cur) * k;
+    if (Math.abs(s.target - next) < 0.5) next = s.target;
+    el.scrollTo({ top: next, behavior: "instant" });
+    // шаг меньше пикселя не сдвигает список — докатываем сразу
+    if (el.scrollTop === cur && next !== s.target) { el.scrollTo({ top: s.target, behavior: "instant" }); next = s.target; }
+    s.last = el.scrollTop;
+    if (next === s.target) { smoothState.delete(el); return; }
+    requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+};
+window.addEventListener("wheel", (e) => {
+  if (e.defaultPrevented || e.ctrlKey || e.shiftKey) return;
+  if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+  const app = document.querySelector(".app");
+  if (app && (app.classList.contains("no-anim") || app.classList.contains("low-power"))) return;
+  let dy = e.deltaY;
+  if (e.deltaMode === 1) dy *= 40;
+  else if (e.deltaMode === 2) dy *= innerHeight;
+  else if (Math.abs(dy) < 40) return; // тачпад и так плавный
+  const el = scrollerFor(e.target, dy);
+  if (!el) return;
+  e.preventDefault();
+  const max = el.scrollHeight - el.clientHeight;
+  let s = smoothState.get(el);
+  if (!s) {
+    s = { target: el.scrollTop, last: el.scrollTop };
+    smoothState.set(el, s);
+    s.target = Math.max(0, Math.min(max, s.target + dy));
+    animateScroll(el);
+  } else {
+    s.target = Math.max(0, Math.min(max, s.target + dy));
+  }
+}, { passive: false });
 await new Promise(() => {});
 "#;
 
