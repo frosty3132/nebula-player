@@ -546,9 +546,16 @@ pub fn Inspector() -> Element {
                 IconBtn { icon: "close", size: 17, title: "Закрыть", onclick: close }
             }
             div { class: "ins-body",
-                div { class: "ins-row inline",
-                    span { "Скрыть элемент" }
-                    Toggle { value: s.hidden, onchange: move |v| edit(st, |t| t.elements.entry(i2.clone()).or_default().hidden = v) }
+                if crate::theme::is_essential(&id) {
+                    div { class: "ins-row inline",
+                        span { "Скрыть элемент" }
+                        span { class: "order-lock", title: "Без этого элемента окно будет пустым", "🔒 нельзя" }
+                    }
+                } else {
+                    div { class: "ins-row inline",
+                        span { "Скрыть элемент" }
+                        Toggle { value: s.hidden, onchange: move |v| edit(st, |t| t.elements.entry(i2.clone()).or_default().hidden = v) }
+                    }
                 }
                 {opt_slider(st, id.clone(), "Скругление", s.radius, 12.0, 0.0, 80.0, 1.0, " px", |e, v| e.radius = v)}
                 {opt_slider(st, id.clone(), "Прозрачность", s.opacity, 1.0, 0.0, 1.0, 0.01, "", |e, v| e.opacity = v)}
