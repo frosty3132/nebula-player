@@ -43,6 +43,7 @@ pub fn navigate(state: AppState, route: Route) {
     if cur == route {
         return;
     }
+    let same_page = cur.key() == route.key();
     {
         let mut back = st.back.write();
         back.push(cur);
@@ -53,7 +54,9 @@ pub fn navigate(state: AppState, route: Route) {
     st.forward.write().clear();
     st.route.set(route);
     st.menu.set(None);
-    scroll_top();
+    if same_page {
+        scroll_top();
+    }
 }
 
 pub fn go_back(state: AppState) {
@@ -61,9 +64,14 @@ pub fn go_back(state: AppState) {
     let prev = st.back.write().pop();
     if let Some(prev) = prev {
         let cur = st.route.peek().clone();
+        let same_page = cur.key() == prev.key();
         st.forward.write().push(cur);
+        if same_page {
+            scroll_top();
+        } else {
+            NAV_BACK.with(|b| b.set(true));
+        }
         st.route.set(prev);
-        scroll_top();
     }
 }
 
@@ -72,14 +80,30 @@ pub fn go_forward(state: AppState) {
     let next = st.forward.write().pop();
     if let Some(next) = next {
         let cur = st.route.peek().clone();
+        let same_page = cur.key() == next.key();
         st.back.write().push(cur);
         st.route.set(next);
-        scroll_top();
+        if same_page {
+            scroll_top();
+        }
     }
 }
 
-fn scroll_top() {
-    document::eval("document.getElementById('content-scroll')?.scrollTo({top: 0});");
+thread_local! {
+    /// Переход сделан кнопкой «Назад» — страница уезжает «наружу», а не вглубь.
+    static NAV_BACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Забрать подсказку «Назад» (её читает стек страниц при смене маршрута).
+pub fn take_nav_back() -> bool {
+    NAV_BACK.with(|b| b.replace(false))
+}
+
+/// Прокрутить текущую страницу к началу. У каждой страницы своя прокрутка,
+/// поэтому новая страница и так открывается сверху — это нужно, только когда
+/// страница остаётся той же (вкладки настроек).
+pub fn scroll_top() {
+    document::eval("document.querySelector('.page-wrap.current')?.scrollTo({top: 0, behavior: 'instant'});");
 }
 
 // ─────────────────────────────── воспроизведение ───────────────────────────────
@@ -341,6 +365,32 @@ pub fn toggle_mute(state: AppState) {
     let mut s = state.settings;
     let m = s.peek().muted;
     s.write().muted = !m;
+}
+
+/// Свернуть нижний плеер в островок в заголовке окна (или развернуть обратно).
+/// С анимациями показанный сейчас элемент сначала доигрывает уход
+/// (`player_switching`), и только потом его сменяет второй.
+pub fn set_player_collapsed(state: AppState, collapsed: bool) {
+    let mut st = state;
+    if st.settings.peek().player_collapsed == collapsed || *st.player_switching.peek() {
+        return;
+    }
+    let (animate, k) = {
+        let s = st.settings.peek();
+        (s.animations && !s.low_power, s.anim_speed.clamp(0.05, 3.0))
+    };
+    if !animate {
+        st.settings.write().player_collapsed = collapsed;
+        return;
+    }
+    st.player_switching.set(true);
+    let leave_ms = if collapsed { 230.0 } else { 170.0 };
+    spawn_forever(async move {
+        tokio::time::sleep(Duration::from_millis((leave_ms * k) as u64)).await;
+        let mut st = st;
+        st.settings.write().player_collapsed = collapsed;
+        st.player_switching.set(false);
+    });
 }
 
 pub fn toggle_shuffle(state: AppState) {

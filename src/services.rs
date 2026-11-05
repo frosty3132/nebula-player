@@ -6,6 +6,7 @@ use crate::lyrics::LyricsClient;
 use crate::media::Media;
 use crate::settings::Settings;
 use crate::soundcloud::SoundCloud;
+use crate::spotify::Spotify;
 use crate::yandex::YandexMusic;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -14,6 +15,7 @@ pub struct Services {
     pub rt: tokio::runtime::Handle,
     pub sc: SoundCloud,
     pub yandex: YandexMusic,
+    pub spotify: Spotify,
     pub lyrics: LyricsClient,
     pub media: Media,
     pub player: Player,
@@ -36,6 +38,7 @@ pub fn init(rt: tokio::runtime::Handle, settings: &Settings) -> &'static Service
         Services {
             sc: SoundCloud::new(http.clone()),
             yandex: YandexMusic::new(http.clone()),
+            spotify: Spotify::new(http.clone()),
             lyrics: LyricsClient::new(http.clone()),
             media,
             player,

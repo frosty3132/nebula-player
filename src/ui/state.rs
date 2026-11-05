@@ -105,7 +105,8 @@ impl Route {
             Route::User(u) => format!("user:{}", u.urn),
             Route::Local => "local".into(),
             Route::SoundCloud => "soundcloud".into(),
-            Route::Settings(t) => format!("settings:{t:?}"),
+            // все вкладки настроек — одна страница: меняется только её содержимое
+            Route::Settings(_) => "settings".into(),
         }
     }
 
@@ -309,6 +310,8 @@ pub enum Modal {
     AddToPlaylist { track: Track },
     LyricsSearch,
     Confirm { title: String, text: String, action: ConfirmAction },
+    /// Импорт плейлиста из Яндекс Музыки или Spotify.
+    Import,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -368,6 +371,10 @@ pub struct AppState {
     pub sc_login_busy: Signal<bool>,
     pub closing: Signal<bool>,
     pub reopening: Signal<bool>,
+    /// Фаза заставки: 0 — нет, 1 — показ логотипа, 2 — интерфейс появляется.
+    pub intro: Signal<u8>,
+    /// Идёт переход «плеер ⇄ островок»: показанный сейчас элемент доигрывает уход.
+    pub player_switching: Signal<bool>,
     pub search_query: Signal<String>,
     pub errors_in_row: Signal<u32>,
     pub related: Signal<Option<(String, Vec<Track>)>>,

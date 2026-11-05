@@ -385,7 +385,9 @@ impl ElementStyle {
     fn write_css(&self, id: &str, out: &mut String) {
         let sel = format!("[data-el=\"{id}\"]");
         let mut d = String::new();
-        if self.hidden {
+        // каркас нельзя скрыть: иначе окно становится пустым и прозрачным,
+        // а вернуть элемент уже нечем — редактор тоже внутри окна
+        if self.hidden && !is_essential(id) {
             d.push_str("display:none !important;");
         }
         if let Some(v) = self.radius {
@@ -395,6 +397,8 @@ impl ElementStyle {
             let _ = write!(d, "background:{} !important;", sanitize_value(v));
         }
         if let Some(v) = self.opacity {
+            // каркас не делаем совсем прозрачным — по той же причине, что и не скрываем
+            let v = if is_essential(id) { v.max(0.2) } else { v };
             let _ = write!(d, "opacity:{v} !important;");
         }
         if let Some(v) = self.blur {
@@ -472,6 +476,14 @@ macro_rules! el {
 }
 
 /// Реестр редактируемых элементов (для инспектора и списка в настройках).
+/// Элементы каркаса, без которых окно пустое: их нельзя скрыть или сделать
+/// полностью прозрачными через редактор элементов.
+pub const ESSENTIAL_ELEMENTS: &[&str] = &["window", "content"];
+
+pub fn is_essential(id: &str) -> bool {
+    ESSENTIAL_ELEMENTS.contains(&id)
+}
+
 pub const ELEMENTS: &[ElementDef] = &[
     el!("window", "Окно", "Каркас"),
     el!("background", "Фон", "Каркас"),
@@ -887,6 +899,19 @@ pub fn export(theme: &Theme, path: &std::path::Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_cannot_be_hidden_or_made_invisible() {
+        let st = ElementStyle { hidden: true, opacity: Some(0.0), ..Default::default() };
+        let mut css = String::new();
+        st.write_css("window", &mut css);
+        assert!(!css.contains("display:none"), "{css}");
+        assert!(css.contains("opacity:0.2"), "{css}");
+        // обычные элементы по-прежнему скрываются
+        let mut other = String::new();
+        st.write_css("player", &mut other);
+        assert!(other.contains("display:none"));
+    }
 
     #[test]
     fn css_contains_vars_and_overrides() {

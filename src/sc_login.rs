@@ -150,6 +150,50 @@ pub fn token_from_cookie_store() -> Option<String> {
     cookies.iter().find(|c| c.name() == "oauth_token").map(|c| c.value().to_string()).filter(|v| !v.is_empty())
 }
 
+/// Что делать с `window.open` на странице входа.
+#[derive(Debug, PartialEq, Eq)]
+enum Popup {
+    /// Окно входа через Google / Facebook / Apple или сам SoundCloud — открыть.
+    SignIn,
+    /// Обычная внешняя ссылка (условия использования и т. п.) — в системный браузер.
+    External,
+    /// Не http(s) — игнорировать.
+    Blocked,
+}
+
+/// Домены, которым нужно всплывающее окно для входа.
+const SIGN_IN_HOSTS: &[&str] = &["soundcloud.com", "google.com", "facebook.com", "apple.com"];
+
+fn popup_kind(url: &str) -> Popup {
+    // Google сначала открывает пустое окно и уже потом задаёт ему адрес
+    if url.is_empty() || url == "about:blank" {
+        return Popup::SignIn;
+    }
+    let Ok(u) = reqwest::Url::parse(url) else { return Popup::Blocked };
+    if !matches!(u.scheme(), "https" | "http") {
+        return Popup::Blocked;
+    }
+    let host = u.host_str().unwrap_or_default().to_ascii_lowercase();
+    let sign_in = SIGN_IN_HOSTS.iter().any(|d| host == *d || host.ends_with(&format!(".{d}")));
+    if sign_in {
+        Popup::SignIn
+    } else {
+        Popup::External
+    }
+}
+
+/// Открыть http(s)-ссылку в браузере по умолчанию.
+fn open_in_browser(url: &str) {
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
+}
+
 fn open<T: 'static>(target: &EventLoopWindowTarget<T>, clear: bool) -> Result<(), String> {
     let window = WindowBuilder::new()
         .with_title("Вход в SoundCloud — Nebula")
@@ -166,7 +210,19 @@ fn open<T: 'static>(target: &EventLoopWindowTarget<T>, clear: bool) -> Result<()
     let mut builder = WebViewBuilder::new_with_web_context(&mut context)
         // после «Выйти» сначала стираем данные прошлой сессии, страницу входа откроет задача входа
         .with_url(if clear { "about:blank" } else { SIGNIN_URL })
-        .with_devtools(cfg!(debug_assertions));
+        .with_devtools(cfg!(debug_assertions))
+        // «Продолжить с Google / Facebook / Apple» открывает окно входа через window.open.
+        // Без обработчика wry блокирует любые всплывающие окна, и SoundCloud пишет
+        // «Please enable popup windows». Окна входа разрешаем (как обычный браузер),
+        // прочие ссылки страницы открываем в системном браузере.
+        .with_new_window_req_handler(|url, _features| match popup_kind(&url) {
+            Popup::SignIn => wry::NewWindowResponse::Allow,
+            Popup::External => {
+                open_in_browser(&url);
+                wry::NewWindowResponse::Deny
+            }
+            Popup::Blocked => wry::NewWindowResponse::Deny,
+        });
     // Только для отладочной сборки: DevTools Protocol окна входа на порту основного + 1.
     #[cfg(debug_assertions)]
     if let Some(port) = std::env::var("NEBULA_DEVTOOLS_PORT").ok().and_then(|p| p.parse::<u16>().ok()) {
@@ -240,6 +296,26 @@ pub fn pump<T: 'static>(event: &Event<'_, T>, target: &EventLoopWindowTarget<T>)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sign_in_popups_are_allowed() {
+        for url in [
+            "about:blank",
+            "https://accounts.google.com/o/oauth2/v2/auth?client_id=x",
+            "https://www.facebook.com/v18.0/dialog/oauth?client_id=x",
+            "https://appleid.apple.com/auth/authorize?client_id=x",
+            "https://secure.soundcloud.com/authorize",
+        ] {
+            assert_eq!(popup_kind(url), Popup::SignIn, "{url}");
+        }
+        assert_eq!(popup_kind("https://soundcloud.com/terms-of-use"), Popup::SignIn);
+        assert_eq!(popup_kind("https://help.example.org/article"), Popup::External);
+        // похожие, но чужие домены не считаются окнами входа
+        assert_eq!(popup_kind("https://google.com.evil.example/x"), Popup::External);
+        assert_eq!(popup_kind("https://notgoogle.com/x"), Popup::External);
+        assert_eq!(popup_kind("javascript:alert(1)"), Popup::Blocked);
+        assert_eq!(popup_kind("file:///C:/Windows"), Popup::Blocked);
+    }
 
     #[test]
     fn probe_parsing() {

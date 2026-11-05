@@ -22,42 +22,54 @@ pub fn upd(st: AppState, f: impl FnOnce(&mut Settings)) {
     f(&mut s.write());
 }
 
+/// Страница настроек живёт, пока открыта любая её вкладка (ключ маршрута один),
+/// поэтому подсветка в списке вкладок плавно переезжает, а содержимое вкладки
+/// въезжает сверху или снизу — в зависимости от того, куда по списку перешли.
 #[component]
 pub fn SettingsPage(tab: SettingsTab) -> Element {
     let st = app_state();
+    let index = SettingsTab::ALL.iter().position(|t| *t == tab).unwrap_or(0);
+    let dir = use_switch_dir(index, "sp-up", "sp-down", "sp-first");
+    let body = match tab {
+        SettingsTab::Sound => rsx! { SoundTab {} },
+        SettingsTab::Playback => rsx! { PlaybackTab {} },
+        SettingsTab::Lyrics => rsx! { LyricsTab {} },
+        SettingsTab::Interface => rsx! { InterfaceTab {} },
+        SettingsTab::Themes => rsx! { ThemesTab {} },
+        SettingsTab::Layout => rsx! { LayoutTab {} },
+        SettingsTab::Elements => rsx! { ElementsTab {} },
+        SettingsTab::Account => rsx! { AccountTab {} },
+        SettingsTab::Cache => rsx! { CacheTab {} },
+        SettingsTab::Hotkeys => rsx! { HotkeysTab {} },
+        SettingsTab::About => rsx! { AboutTab {} },
+    };
+    // ключ на корне rsx-блока: смена вкладки пересоздаёт только содержимое
+    let body = rsx! {
+        div { key: "{tab:?}", class: "set-pane {dir}", {body} }
+    };
     rsx! {
         div { class: "page settings",
             div { class: "set-layout",
-                nav { class: "set-tabs glass",
+                nav { class: "set-tabs glass", "data-glide": ".set-tab.active",
+                    span { class: "glider set-glider" }
                     h2 { class: "set-tabs-title", "Настройки" }
                     for t in SettingsTab::ALL {
                         button {
                             key: "{t:?}",
                             class: if t == tab { "set-tab active" } else { "set-tab" },
                             onclick: move |_| {
-                                let mut r = st.route;
-                                r.set(Route::Settings(t));
+                                if *st.route.peek() != Route::Settings(t) {
+                                    let mut r = st.route;
+                                    r.set(Route::Settings(t));
+                                    scroll_top();
+                                }
                             },
                             Icon { name: t.icon(), size: 18 }
                             span { "{t.label()}" }
                         }
                     }
                 }
-                div { class: "set-body",
-                    match tab {
-                        SettingsTab::Sound => rsx! { SoundTab {} },
-                        SettingsTab::Playback => rsx! { PlaybackTab {} },
-                        SettingsTab::Lyrics => rsx! { LyricsTab {} },
-                        SettingsTab::Interface => rsx! { InterfaceTab {} },
-                        SettingsTab::Themes => rsx! { ThemesTab {} },
-                        SettingsTab::Layout => rsx! { LayoutTab {} },
-                        SettingsTab::Elements => rsx! { ElementsTab {} },
-                        SettingsTab::Account => rsx! { AccountTab {} },
-                        SettingsTab::Cache => rsx! { CacheTab {} },
-                        SettingsTab::Hotkeys => rsx! { HotkeysTab {} },
-                        SettingsTab::About => rsx! { AboutTab {} },
-                    }
-                }
+                div { class: "set-body", {body} }
             }
         }
     }
@@ -223,6 +235,9 @@ fn InterfaceTab() -> Element {
                 Slider { value: s.anim_speed, min: 0.25, max: 2.5, step: 0.05, decimals: 2, unit: "×", oninput: move |v: f32| upd(st, |s| s.anim_speed = v) }
             }
             Row { label: "Анимация открытия и закрытия окна", Toggle { value: s.open_close_anim, onchange: move |v| upd(st, |s| s.open_close_anim = v) } }
+            Row { label: "Заставка при запуске", hint: "Логотип, затем интерфейс плавно собирается по частям. Пропустить — клик или любая клавиша",
+                Toggle { value: s.intro_anim, onchange: move |v| upd(st, |s| s.intro_anim = v) }
+            }
             Row { label: "Пауза фона, когда окно неактивно", hint: "Звёзды и видео замирают — ноль нагрузки в фоне", Toggle { value: s.pause_bg_unfocused, onchange: move |v| upd(st, |s| s.pause_bg_unfocused = v) } }
             Row { label: "Экономный режим", hint: "Меньше размытия, звёзд и эффектов — для слабых ПК и ноутбуков", Toggle { value: s.low_power, onchange: move |v| upd(st, |s| s.low_power = v) } }
             Row { label: "Цвет акцента из обложки", Toggle { value: s.dynamic_accent, onchange: move |v| {

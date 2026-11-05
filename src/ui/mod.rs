@@ -6,6 +6,7 @@ mod actions;
 mod background;
 mod chrome;
 mod icons;
+mod import_dialog;
 mod lyrics_view;
 mod overlays;
 mod pages;
@@ -15,6 +16,7 @@ mod settings_page;
 mod state;
 mod theme_editor;
 mod tracks;
+mod transition;
 mod widgets;
 
 use crate::audio::{PlaybackState, PlayerEvent};
@@ -31,7 +33,7 @@ use dioxus::prelude::*;
 use lyrics_view::{FullscreenLyrics, LyricsPanel};
 use overlays::{ContextMenu, EditHint, ModalHost, QueuePanel, Toasts};
 use pages::*;
-use player_bar::{DynamicIsland, EqPanel, PlayerBar};
+use player_bar::{EqPanel, PlayerBar};
 use serde::Deserialize;
 use settings_page::SettingsPage;
 pub use state::*;
@@ -39,6 +41,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use theme_editor::Inspector;
+use transition::{intro_enabled, intro_reveal, intro_start, Intro, PageStack};
 
 const BOOT_JS: &str = r#"
 const send = (m) => { try { dioxus.send(m); } catch (e) {} };
@@ -83,6 +86,108 @@ document.addEventListener("contextmenu", (e) => {
   if (!(t.tagName === "INPUT" || t.tagName === "TEXTAREA")) e.preventDefault();
 });
 document.addEventListener("dragstart", (e) => { if (e.target.tagName === "IMG") e.preventDefault(); });
+
+// «Скользящая» подсветка активного пункта: у контейнера с data-glide="<селектор
+// активного>" есть дочерний .glider, он переезжает под активный элемент.
+// Меряем offset* (они не учитывают transform — значок при наведении увеличен).
+const glide = (root) => {
+  const g = root.querySelector(":scope > .glider");
+  if (!g) return;
+  let a = root.querySelector(root.dataset.glide);
+  if (a && root.dataset.glideIn) a = a.querySelector(root.dataset.glideIn) || a;
+  let x = 0, y = 0, n = a;
+  while (n && n !== root) { x += n.offsetLeft; y += n.offsetTop; n = n.offsetParent; }
+  const s = root.style;
+  if (!a || n !== root || !a.offsetWidth) { s.setProperty("--go", "0"); return; }
+  s.setProperty("--gx", x + "px");
+  s.setProperty("--gy", y + "px");
+  s.setProperty("--gw", a.offsetWidth + "px");
+  s.setProperty("--gh", a.offsetHeight + "px");
+  s.setProperty("--go", "1");
+  // первая расстановка — без анимации, дальше подсветка ездит плавно
+  if (!root.hasAttribute("data-glide-ready")) requestAnimationFrame(() => requestAnimationFrame(() => root.setAttribute("data-glide-ready", "")));
+};
+const glideRoots = new WeakSet();
+const attachGlide = (root) => {
+  if (glideRoots.has(root)) return;
+  glideRoots.add(root);
+  const upd = () => { if (root.isConnected) glide(root); };
+  new MutationObserver(upd).observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ["class"] });
+  if (window.ResizeObserver) new ResizeObserver(upd).observe(root);
+  glide(root);
+};
+const scanGlide = (n) => {
+  if (n.nodeType !== 1) return;
+  if (n.hasAttribute("data-glide")) attachGlide(n);
+  n.querySelectorAll("[data-glide]").forEach(attachGlide);
+};
+new MutationObserver((recs) => { for (const r of recs) r.addedNodes.forEach(scanGlide); })
+  .observe(document.getElementById("main") || document.body, { childList: true, subtree: true });
+scanGlide(document.body);
+
+// Плавная прокрутка колесом мыши: щелчок колеса не прыгает, а мягко докатывает
+// список к цели. Тачпад (мелкие шаги) и Ctrl/Shift+колесо остаются системными,
+// в экономном режиме и без анимаций — обычная прокрутка.
+const smoothState = new WeakMap();
+const canScrollY = (el) => {
+  if (el.scrollHeight <= el.clientHeight + 1) return false;
+  const oy = getComputedStyle(el).overflowY;
+  return oy === "auto" || oy === "scroll";
+};
+const scrollerFor = (start, dy) => {
+  for (let el = start; el && el !== document.body; el = el.parentElement) {
+    if (el.nodeType !== 1 || !canScrollY(el)) continue;
+    const s = smoothState.get(el);
+    const pos = s ? s.target : el.scrollTop;
+    const max = el.scrollHeight - el.clientHeight;
+    // упёрлись в край — прокрутку получает внешний контейнер
+    if ((dy > 0 && pos < max - 1) || (dy < 0 && pos > 1)) return el;
+  }
+  return null;
+};
+const animateScroll = (el) => {
+  const s = smoothState.get(el);
+  let prev = performance.now();
+  const step = (now) => {
+    // пользователь тянет ползунок или жмёт клавиши — уступаем
+    if (Math.abs(el.scrollTop - s.last) > 2) { smoothState.delete(el); return; }
+    const dt = Math.min(64, now - prev); prev = now;
+    const k = 1 - Math.pow(1 - 0.16, dt / 16.67);
+    const cur = el.scrollTop;
+    let next = cur + (s.target - cur) * k;
+    if (Math.abs(s.target - next) < 0.5) next = s.target;
+    el.scrollTo({ top: next, behavior: "instant" });
+    // шаг меньше пикселя не сдвигает список — докатываем сразу
+    if (el.scrollTop === cur && next !== s.target) { el.scrollTo({ top: s.target, behavior: "instant" }); next = s.target; }
+    s.last = el.scrollTop;
+    if (next === s.target) { smoothState.delete(el); return; }
+    requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+};
+window.addEventListener("wheel", (e) => {
+  if (e.defaultPrevented || e.ctrlKey || e.shiftKey) return;
+  if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+  const app = document.querySelector(".app");
+  if (app && (app.classList.contains("no-anim") || app.classList.contains("low-power"))) return;
+  let dy = e.deltaY;
+  if (e.deltaMode === 1) dy *= 40;
+  else if (e.deltaMode === 2) dy *= innerHeight;
+  else if (Math.abs(dy) < 40) return; // тачпад и так плавный
+  const el = scrollerFor(e.target, dy);
+  if (!el) return;
+  e.preventDefault();
+  const max = el.scrollHeight - el.clientHeight;
+  let s = smoothState.get(el);
+  if (!s) {
+    s = { target: el.scrollTop, last: el.scrollTop };
+    smoothState.set(el, s);
+    s.target = Math.max(0, Math.min(max, s.target + dy));
+    animateScroll(el);
+  } else {
+    s.target = Math.max(0, Math.min(max, s.target + dy));
+  }
+}, { passive: false });
 await new Promise(() => {});
 "#;
 
@@ -96,6 +201,11 @@ struct JsMsg {
 }
 
 fn handle_key(st: AppState, m: JsMsg) {
+    // любая клавиша во время заставки просто пропускает её
+    if *st.intro.peek() == 1 && !m.k.starts_with("__") {
+        intro_reveal(st);
+        return;
+    }
     let step_s = st.settings.peek().seek_step_s;
     let vol_step = st.settings.peek().volume_step;
     match (m.k.as_str(), m.ctrl) {
@@ -241,6 +351,25 @@ fn apply_window_effect(effect: WindowEffect, dark: bool) {
     }
 }
 
+/// Содержимое страницы для маршрута.
+fn page_view(route: Route) -> Element {
+    match route {
+        Route::Home => rsx! { Home {} },
+        Route::Search => rsx! { Search {} },
+        Route::Genres => rsx! { Genres {} },
+        Route::Genre(g) => rsx! { Genre { name: g } },
+        Route::Favorites => rsx! { Favorites {} },
+        Route::History => rsx! { History {} },
+        Route::Playlists => rsx! { Playlists {} },
+        Route::LocalPlaylist(id) => rsx! { LocalPlaylistPage { id } },
+        Route::ScPlaylist(info) => rsx! { ScPlaylistPage { info } },
+        Route::User(user) => rsx! { UserPage { user } },
+        Route::Local => rsx! { Local {} },
+        Route::SoundCloud => rsx! { SoundCloudPage {} },
+        Route::Settings(tab) => rsx! { SettingsPage { tab } },
+    }
+}
+
 #[component]
 pub fn App() -> Element {
     let mut st = use_context_provider(|| {
@@ -248,7 +377,10 @@ pub fn App() -> Element {
         let themes = theme::load_all();
         let theme = themes.iter().find(|t| t.id == settings.theme).cloned().unwrap_or_else(|| themes[0].clone());
         let local = LocalIndex::load().tracks();
+        let intro = if intro_enabled(&settings) { 1 } else { 0 };
         AppState {
+            intro: Signal::new(intro),
+            player_switching: Signal::new(false),
             settings: Signal::new(settings),
             theme: Signal::new(theme),
             themes: Signal::new(themes),
@@ -299,8 +431,11 @@ pub fn App() -> Element {
     // ── старт: восстановить сессию, обновить локальную библиотеку ──
     let mut opening = use_signal(|| true);
     let mut maximized = use_signal(|| false);
+    let page_stack = use_hook(|| Rc::new(RefCell::new(PageStack::default())));
+    let page_tick = use_signal(|| 0u64);
     use_hook(move || {
         restore_session(st);
+        intro_start(st);
         spawn(async move {
             tokio::time::sleep(Duration::from_millis(700)).await;
             opening.set(false);
@@ -575,12 +710,14 @@ pub fn App() -> Element {
     // ── раскладка ──
     let layout = st.theme.read().layout.clone();
     let has_track = st.now.read().is_some();
-    let (lyrics_open, queue_open, pause_bg) = {
+    let (lyrics_open, queue_open, pause_bg, player_collapsed) = {
         let s = st.settings.read();
-        (s.lyrics_open && s.lyrics_enabled && has_track, s.queue_open, s.pause_bg_unfocused)
+        (s.lyrics_open && s.lyrics_enabled && has_track, s.queue_open, s.pause_bg_unfocused, s.player_collapsed)
     };
     let s = st.settings.read();
     let pstate = *st.pstate.read();
+    let intro = *st.intro.read();
+    let page_anim = (s.animations && !s.low_power, s.anim_speed);
     let class = [
         "app",
         match layout.sidebar {
@@ -601,7 +738,13 @@ pub fn App() -> Element {
         if *st.closing.read() { "closing" } else { "" },
         if *opening.read() && s.open_close_anim { "opening" } else { "" },
         if *st.reopening.read() && !*st.hidden.read() { "opening" } else { "" },
+        match intro {
+            1 => "intro-wait",
+            2 => "intro-reveal",
+            _ => "",
+        },
         if *maximized.read() { "maximized" } else { "" },
+        if player_collapsed { "player-collapsed" } else { "" },
         if matches!(pstate, PlaybackState::Playing | PlaybackState::Buffering) { "is-playing" } else { "is-paused" },
     ]
     .iter()
@@ -611,27 +754,22 @@ pub fn App() -> Element {
     .join(" ");
     drop(s);
 
+    // ── страницы: текущая + уходящие (доигрывают анимацию поверх новой) ──
+    // Смена маршрута с другим ключом создаёт новую страницу (анимация входа,
+    // свежая загрузка данных при переходе жанр → жанр); старая уходит сама.
     let route = st.route.read().clone();
-    let page = match route.clone() {
-        Route::Home => rsx! { Home {} },
-        Route::Search => rsx! { Search {} },
-        Route::Genres => rsx! { Genres {} },
-        Route::Genre(g) => rsx! { Genre { name: g } },
-        Route::Favorites => rsx! { Favorites {} },
-        Route::History => rsx! { History {} },
-        Route::Playlists => rsx! { Playlists {} },
-        Route::LocalPlaylist(id) => rsx! { LocalPlaylistPage { id } },
-        Route::ScPlaylist(info) => rsx! { ScPlaylistPage { info } },
-        Route::User(user) => rsx! { UserPage { user } },
-        Route::Local => rsx! { Local {} },
-        Route::SoundCloud => rsx! { SoundCloudPage {} },
-        Route::Settings(tab) => rsx! { SettingsPage { tab } },
-    };
-    // ключ должен стоять на корне rsx-блока: смена маршрута пересоздаёт страницу
-    // (анимация входа, свежая загрузка данных при переходе жанр → жанр)
-    let route_key = route.key();
-    let page = rsx! {
-        div { key: "{route_key}", class: "page-wrap", {page} }
+    let _ = page_tick.read();
+    let pages: Vec<(String, String, Route)> = {
+        let mut ps = page_stack.borrow_mut();
+        if let Some(after) = ps.sync(&route, page_anim.0, page_anim.1, &layout.nav) {
+            spawn(async move {
+                tokio::time::sleep(after + Duration::from_millis(30)).await;
+                let mut t = page_tick;
+                let v = *t.peek();
+                t.set(v.wrapping_add(1));
+            });
+        }
+        ps.slots().iter().map(|p| (p.key.clone(), p.class(), p.route.clone())).collect()
     };
     let lyrics_left = layout.lyrics_side == Side::Left;
 
@@ -642,7 +780,6 @@ pub fn App() -> Element {
             Background {}
             div { class: "frame",
                 TitleBar {}
-                DynamicIsland {}
                 div { class: "body",
                     if layout.sidebar == SidebarPos::Left {
                         Sidebar {}
@@ -650,7 +787,11 @@ pub fn App() -> Element {
                     if lyrics_open && lyrics_left {
                         LyricsPanel {}
                     }
-                    main { class: "content", id: "content-scroll", "data-el": "content", {page} }
+                    main { class: "content", "data-el": "content",
+                        for (key , class , route) in pages {
+                            div { key: "{key}", class: "{class}", {page_view(route)} }
+                        }
+                    }
                     if lyrics_open && !lyrics_left {
                         LyricsPanel {}
                     }
@@ -661,7 +802,13 @@ pub fn App() -> Element {
                         Sidebar {}
                     }
                 }
-                PlayerBar {}
+                // свёрнутый плеер живёт в островке в заголовке окна
+                if !player_collapsed {
+                    PlayerBar {}
+                }
+            }
+            if intro != 0 {
+                Intro {}
             }
             if *st.fullscreen.read() {
                 FullscreenLyrics {}

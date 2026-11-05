@@ -50,6 +50,20 @@ fn mime_by_ext(p: &Path) -> &'static str {
     }
 }
 
+/// Маршрут (`/img`, `/cover`, `/file`) и параметры запроса к `/media/*`.
+///
+/// Берём только путь и строку запроса: схема и хост зависят от платформы.
+/// На Windows WebView2 запрашивает `http://dioxus.index.html/media/...`, но
+/// wry перед вызовом обработчика возвращает адрес к виду
+/// `dioxus://index.html/media/...` — раньше такой адрес разбирался неверно,
+/// и все обложки получали 404.
+fn parse_media_uri(uri: &dioxus_desktop::wry::http::Uri) -> Option<(String, HashMap<String, String>)> {
+    let pq = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
+    let url = Url::parse(&format!("http://local{pq}")).ok()?;
+    let q = url.query_pairs().into_owned().collect();
+    Some((url.path().trim_start_matches("/media").to_string(), q))
+}
+
 fn respond_status(responder: RequestAsyncResponder, status: StatusCode) {
     responder.respond(Response::builder().status(status).body(Vec::new()).unwrap());
 }
@@ -113,14 +127,10 @@ impl Media {
     }
 
     pub fn handle(&'static self, req: Request<Vec<u8>>, responder: RequestAsyncResponder) {
-        let uri = req.uri().to_string();
         let range = req.headers().get(header::RANGE).and_then(|v| v.to_str().ok()).map(str::to_string);
-        let full = if uri.starts_with("http") { uri } else { format!("http://local{uri}") };
-        let Ok(url) = Url::parse(&full) else {
+        let Some((route, q)) = parse_media_uri(req.uri()) else {
             return respond_status(responder, StatusCode::BAD_REQUEST);
         };
-        let q: HashMap<String, String> = url.query_pairs().into_owned().collect();
-        let route = url.path().trim_start_matches("/media").to_string();
 
         crate::services::svc().rt.spawn(async move {
             match route.as_str() {
@@ -350,6 +360,26 @@ pub fn dominant_color(bytes: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn media_uri_in_both_platform_forms() {
+        let art = "https://i1.sndcdn.com/artworks-abc-t300x300.jpg";
+        let enc = urlencoding::encode(art);
+        for raw in [
+            format!("dioxus://index.html/media/img?u={enc}"),
+            format!("http://dioxus.index.html/media/img?u={enc}"),
+            format!("/media/img?u={enc}"),
+        ] {
+            let uri: dioxus_desktop::wry::http::Uri = raw.parse().unwrap();
+            let (route, q) = parse_media_uri(&uri).unwrap();
+            assert_eq!(route, "/img", "{raw}");
+            assert_eq!(q.get("u").map(String::as_str), Some(art), "{raw}");
+        }
+        let uri: dioxus_desktop::wry::http::Uri = "dioxus://index.html/media/cover?p=C%3A%5CMusic%5Ca%20b.mp3".parse().unwrap();
+        let (route, q) = parse_media_uri(&uri).unwrap();
+        assert_eq!(route, "/cover");
+        assert_eq!(q.get("p").map(String::as_str), Some(r"C:\Music\a b.mp3"));
+    }
 
     #[test]
     fn mime_sniffing() {

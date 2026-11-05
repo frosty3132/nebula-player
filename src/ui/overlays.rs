@@ -3,6 +3,7 @@
 
 use super::actions::*;
 use super::icons::Icon;
+use super::import_dialog::ImportDialog;
 use super::lyrics_view::LyricsSearch;
 use super::player_bar::Cover;
 use super::state::*;
@@ -226,6 +227,7 @@ pub fn ModalHost() -> Element {
             })
         }
         Modal::LyricsSearch => ("Поиск текста в LRCLIB".to_string(), rsx! { LyricsSearch {} }),
+        Modal::Import => ("Импорт плейлиста".to_string(), rsx! { ImportDialog {} }),
         Modal::Confirm { title, text, action } => (title, rsx! {
             p { class: "modal-text", "{text}" }
             div { class: "modal-actions",

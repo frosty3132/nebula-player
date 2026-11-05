@@ -33,8 +33,10 @@ pub fn PlayerBar() -> Element {
         PlayerStyle::Centered => "ps-centered",
         PlayerStyle::Minimal => "ps-minimal",
     };
+    // пока идёт переход в островок, плеер доигрывает уход вниз
+    let leaving = *st.player_switching.read();
     rsx! {
-        footer { class: "player {style}", "data-el": "player",
+        footer { class: if leaving { "player {style} leaving" } else { "player {style}" }, "data-el": "player",
             NowPlayingInfo {}
             div { class: "p-center",
                 Controls { order: layout.controls.clone() }
@@ -47,44 +49,64 @@ pub fn PlayerBar() -> Element {
     }
 }
 
-/// Компактный верхний контроллер в стиле Dynamic Island.
-/// В свернутом виде он почти не отвлекает от контента, а при наведении
-/// раскрывает обложку, метаданные и основные действия плеера.
+/// Островок — нижний плеер, свёрнутый в заголовок окна (слева от панели
+/// разделов). Показывается только когда плеер свёрнут. Сам островок —
+/// компактная капсула (обложка, название, пульс, пауза); при наведении под ним
+/// выпадает карточка с перемоткой, переключением треков и кнопкой «развернуть».
 #[component]
-pub fn DynamicIsland() -> Element {
+pub fn Island() -> Element {
     let mut st = app_state();
-    let Some(track) = st.now.read().clone() else {
-        return rsx! {};
-    };
+    let track = st.now.read().clone();
     let playing = matches!(*st.pstate.read(), PlaybackState::Playing | PlaybackState::Buffering);
     let pos = (*st.position.read() / 250) * 250;
     let dur = *st.duration.read();
     let pct = if dur > 0 { (pos as f64 / dur as f64 * 100.0).min(100.0) } else { 0.0 };
-    let art = track.art(ArtSize::Medium);
+    let art = track.as_ref().and_then(|t| t.art(ArtSize::Medium));
     let bg_style = art.as_deref().map(|a| format!("--di-art: url('{a}');")).unwrap_or_default();
-    let track_for_menu = track.clone();
+    let (title, artist) = match &track {
+        Some(t) => (t.title.clone(), t.artist.clone()),
+        None => ("Ничего не играет".to_string(), "Выберите трек".to_string()),
+    };
+    let has_track = track.is_some();
+    let leaving = *st.player_switching.read();
     rsx! {
-        div { class: "dynamic-island", style: "{bg_style}", "data-el": "dynamic_island",
-            div { class: "di-collapsed",
+        div {
+            class: if leaving { "island leaving" } else { "island" },
+            "data-el": "dynamic_island",
+            // островок живёт в заголовке окна: не даём начать перетаскивание окна
+            onmousedown: move |e| e.stop_propagation(),
+            ondoubleclick: move |e| {
+                e.stop_propagation();
+                set_player_collapsed(st, false);
+            },
+            div { class: "island-pill",
                 Cover { src: art.clone(), class: "di-cover", loading: "eager" }
                 div { class: "di-meta",
-                    div { class: "di-title ellipsis", "{track.title}" }
-                    div { class: "di-artist ellipsis", "{track.artist}" }
+                    div { class: "di-title ellipsis", "{title}" }
+                    div { class: "di-artist ellipsis", "{artist}" }
                 }
                 span { class: if playing { "di-bars on" } else { "di-bars" },
                     span {} span {} span {}
                 }
+                button {
+                    class: "di-play small",
+                    title: if playing { "Пауза" } else { "Играть" },
+                    disabled: !has_track,
+                    ondoubleclick: move |e| e.stop_propagation(),
+                    onclick: move |_| toggle_play(st),
+                    Icon { name: if playing { "pause" } else { "play" }, size: 16 }
+                }
             }
-            div { class: "di-expanded",
+            div { class: "island-card", style: "{bg_style}",
                 Cover { src: art, class: "di-cover-large", loading: "eager" }
                 div { class: "di-expanded-main",
                     div { class: "di-meta",
-                        div { class: "di-title ellipsis", "{track.title}" }
-                        div { class: "di-artist ellipsis", "{track.artist}" }
+                        div { class: "di-title ellipsis", "{title}" }
+                        div { class: "di-artist ellipsis", "{artist}" }
                     }
                     div { class: "di-controls",
                         IconBtn { icon: "prev", title: "Предыдущий", size: 18, onclick: move |_| prev(st) }
-                        button { class: "di-play", onclick: move |_| toggle_play(st), Icon { name: if playing { "pause" } else { "play" }, size: 18 } }
+                        button { class: "di-play", disabled: !has_track, onclick: move |_| toggle_play(st), Icon { name: if playing { "pause" } else { "play" }, size: 18 } }
                         IconBtn { icon: "next", title: "Следующий", size: 18, onclick: move |_| next(st, true) }
                     }
                     div { class: "di-progress",
@@ -95,6 +117,7 @@ pub fn DynamicIsland() -> Element {
                             max: "{dur.max(1)}",
                             step: "250",
                             value: "{pos}",
+                            disabled: !has_track,
                             style: "--di-p: {pct}%;",
                             oninput: move |e: FormEvent| {
                                 if let Ok(v) = e.value().parse::<u64>() { seek(st, v); }
@@ -103,10 +126,15 @@ pub fn DynamicIsland() -> Element {
                         span { class: "time", "{fmt_time(dur)}" }
                     }
                 }
-                IconBtn { icon: "more", title: "Ещё", size: 18,
-                    onclick: move |e: MouseEvent| {
-                        let p = e.client_coordinates();
-                        st.menu.set(Some(MenuState { x: p.x, y: p.y + 12.0, track: track_for_menu.clone(), playlist: None, queue_index: None }));
+                div { class: "island-side",
+                    IconBtn { icon: "to_bottom", title: "Развернуть плеер внизу", size: 18, onclick: move |_| set_player_collapsed(st, false) }
+                    if let Some(t) = track.clone() {
+                        IconBtn { icon: "more", title: "Ещё", size: 18,
+                            onclick: move |e: MouseEvent| {
+                                let p = e.client_coordinates();
+                                st.menu.set(Some(MenuState { x: p.x, y: p.y + 12.0, track: t.clone(), playlist: None, queue_index: None }));
+                            }
+                        }
                     }
                 }
             }
@@ -333,6 +361,9 @@ fn Extras(order: Vec<Extra>) -> Element {
                     Extra::Volume => rsx! { Volume { key: "{x:?}" } },
                 }
             }
+            span { class: "p-sep" }
+            IconBtn { icon: "to_top", title: "Свернуть плеер в островок", size: 19, class: "p-collapse",
+                onclick: move |_| set_player_collapsed(st, true) }
         }
     }
 }
