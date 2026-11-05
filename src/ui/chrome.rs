@@ -3,6 +3,7 @@
 
 use super::actions::{go_back, go_forward, navigate, save_session};
 use super::icons::{Icon, LOGO_SVG};
+use super::player_bar::Island;
 use super::state::*;
 use super::widgets::IconBtn;
 use crate::theme::{Entry, SidebarPos, NAV_ITEMS};
@@ -78,6 +79,7 @@ pub fn TitleBar() -> Element {
     let edit = *st.edit_mode.read();
     // «Hidden» из старых тем показываем так же, как верхнюю панель
     let top_dock = matches!(layout.sidebar, SidebarPos::Top | SidebarPos::Hidden);
+    let collapsed = st.settings.read().player_collapsed;
 
     let mut max_sig = maximized;
     rsx! {
@@ -106,6 +108,10 @@ pub fn TitleBar() -> Element {
                 }
             }
             div { class: "tb-center",
+                // островок (свёрнутый плеер) — слева от панели разделов
+                if collapsed {
+                    Island {}
+                }
                 if top_dock {
                     Dock { nav: layout.nav.clone(), route: route.clone() }
                 }
@@ -157,39 +163,50 @@ pub fn TitleBar() -> Element {
     }
 }
 
-/// Верхняя панель-док: значки разделов. При наведении значок пружинисто
-/// увеличивается (соседи — чуть меньше, как в доке), покачивается и показывает подпись.
-/// Всё на CSS (`scale`/`translate`/`rotate`) — работает на GPU-композиторе.
+/// Верхняя панель-док: значки разделов. При наведении значок слегка
+/// приподнимается и светлеет, а через мгновение показывает подпись.
+/// Подсветка активного раздела — одна «капля» (`.glider`), которая плавно
+/// переезжает под новый значок. Всё на CSS (`scale`/`translate`) — работает
+/// на GPU-композиторе; `--i` — номер значка для каскада при запуске.
 #[component]
 fn Dock(nav: Vec<Entry>, route: Route) -> Element {
     let st = app_state();
     let settings_active = matches!(route, Route::Settings(_));
+    let items: Vec<(usize, &'static str, &'static str, &'static str)> = nav
+        .iter()
+        .filter(|e| e.visible)
+        .filter_map(|e| NAV_ITEMS.iter().find(|n| n.0 == e.id))
+        .enumerate()
+        .map(|(i, n)| (i, n.0, n.1, n.2))
+        .collect();
+    let n = items.len();
     rsx! {
-        nav { class: "dock", "data-el": "nav",
-            for entry in nav.iter().filter(|e| e.visible) {
-                if let Some((id, label, icon)) = NAV_ITEMS.iter().find(|n| n.0 == entry.id) {
-                    button {
-                        key: "{id}",
-                        class: if route.nav_id() == *id { "dock-item active" } else { "dock-item" },
-                        "data-el": "nav_item",
-                        "aria-label": "{label}",
-                        onmousedown: move |e| e.stop_propagation(),
-                        ondoubleclick: move |e| e.stop_propagation(),
-                        onclick: move |_| navigate(st, Route::from_nav(id)),
-                        span { class: "dock-icon", Icon { name: icon.to_string(), size: 21 } }
-                        span { class: "dock-label", "{label}" }
-                    }
+        nav { class: "dock", "data-el": "nav", "data-glide": ".dock-item.active", "data-glide-in": ".dock-icon",
+            span { class: "glider dock-glider" }
+            for (i , id , label , icon) in items {
+                button {
+                    key: "{id}",
+                    class: if route.nav_id() == id { "dock-item active" } else { "dock-item" },
+                    style: "--i: {i}",
+                    "data-el": "nav_item",
+                    "aria-label": "{label}",
+                    onmousedown: move |e| e.stop_propagation(),
+                    ondoubleclick: move |e| e.stop_propagation(),
+                    onclick: move |_| navigate(st, Route::from_nav(id)),
+                    span { class: "dock-icon", Icon { name: icon.to_string(), size: 20 } }
+                    span { class: "dock-label", "{label}" }
                 }
             }
-            span { class: "dock-sep" }
+            span { class: "dock-sep", style: "--i: {n}" }
             button {
                 class: if settings_active { "dock-item active" } else { "dock-item" },
+                style: "--i: {n + 1}",
                 "data-el": "nav_item",
                 "aria-label": "Настройки",
                 onmousedown: move |e| e.stop_propagation(),
                 ondoubleclick: move |e| e.stop_propagation(),
                 onclick: move |_| navigate(st, Route::Settings(SettingsTab::Sound)),
-                span { class: "dock-icon", Icon { name: "settings", size: 21 } }
+                span { class: "dock-icon", Icon { name: "settings", size: 20 } }
                 span { class: "dock-label", "Настройки" }
             }
         }
@@ -219,7 +236,8 @@ pub fn Sidebar() -> Element {
                     }
                 }
             }
-            nav { class: "nav", "data-el": "nav",
+            nav { class: "nav", "data-el": "nav", "data-glide": ".nav-item.active",
+                span { class: "glider nav-glider" }
                 for entry in layout.nav.iter().filter(|e| e.visible) {
                     if let Some((id, label, icon)) = NAV_ITEMS.iter().find(|n| n.0 == entry.id) {
                         button {

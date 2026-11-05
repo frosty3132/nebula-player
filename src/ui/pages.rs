@@ -7,45 +7,58 @@ use super::player_bar::Cover;
 use super::sc_account::LoginButton;
 use super::state::*;
 use super::tracks::*;
-use super::widgets::{Empty, IconBtn, Spinner};
+use super::widgets::{use_switch_dir, Empty, IconBtn, Spinner};
 use crate::model::{fmt_count, fmt_listening, image_url, sc_art_size, ArtSize, Page, PlaylistInfo, Track, UserInfo};
 use crate::services::svc;
 use crate::theme::HOME_SECTIONS;
 use dioxus::core::spawn_forever;
 use dioxus::prelude::*;
-use futures_util::stream::{self, StreamExt};
 use std::time::Duration;
 
-/// (жанр в API, подпись, цвет 1, цвет 2, символ)
-pub const GENRES: &[(&str, &str, &str, &str, &str)] = &[
-    ("Phonk", "Фонк", "#7c3aed", "#db2777", "👻"),
-    ("Hip-hop & Rap", "Хип-хоп и рэп", "#f59e0b", "#ef4444", "🎤"),
-    ("Electronic", "Электроника", "#06b6d4", "#3b82f6", "⚡"),
-    ("House", "Хаус", "#22c55e", "#14b8a6", "🏠"),
-    ("Techno", "Техно", "#64748b", "#0ea5e9", "🛸"),
-    ("Drum & Bass", "Drum & Bass", "#f97316", "#a855f7", "🥁"),
-    ("Lo-fi", "Lo-Fi", "#a78bfa", "#f472b6", "☕"),
-    ("Ambient", "Эмбиент", "#0ea5e9", "#6366f1", "🌌"),
-    ("Synthwave", "Синтвейв", "#ff2a6d", "#05d9e8", "🌆"),
-    ("Trap", "Трэп", "#e11d48", "#7c3aed", "💎"),
-    ("Pop", "Поп", "#ec4899", "#f59e0b", "🎧"),
-    ("Rock", "Рок", "#ef4444", "#78716c", "🎸"),
-    ("Metal", "Метал", "#525252", "#dc2626", "🤘"),
-    ("R&B & Soul", "R&B и соул", "#8b5cf6", "#ec4899", "💜"),
-    ("Jazz & Blues", "Джаз и блюз", "#d97706", "#7c2d12", "🎷"),
-    ("Classical", "Классика", "#94a3b8", "#6366f1", "🎻"),
-    ("Dubstep", "Дабстеп", "#84cc16", "#06b6d4", "🔊"),
-    ("Deep House", "Дип-хаус", "#0891b2", "#7c3aed", "🌊"),
-    ("Dance & EDM", "Dance и EDM", "#22d3ee", "#e879f9", "💃"),
-    ("Trance", "Транс", "#3b82f6", "#a855f7", "✨"),
-    ("Indie", "Инди", "#f472b6", "#facc15", "🌻"),
-    ("Chill", "Чилл", "#14b8a6", "#a78bfa", "🌙"),
-    ("Soundtrack", "Саундтреки", "#6366f1", "#1e1b4b", "🎬"),
-    ("Reggaeton", "Реггетон", "#f59e0b", "#22c55e", "🌴"),
+/// (жанр в API, подпись, значок). Цвета у жанров нет: карточка красится
+/// оттенком из палитры темы (см. [`genre_tint`]), поэтому каталог подходит к любой теме.
+pub const GENRES: &[(&str, &str, &str)] = &[
+    ("Phonk", "Фонк", "g_car"),
+    ("Hip-hop & Rap", "Хип-хоп и рэп", "mic"),
+    ("Electronic", "Электроника", "g_bolt"),
+    ("House", "Хаус", "g_speaker"),
+    ("Techno", "Техно", "g_chip"),
+    ("Drum & Bass", "Drum & Bass", "g_speed"),
+    ("Lo-fi", "Lo-Fi", "g_cafe"),
+    ("Ambient", "Эмбиент", "g_landscape"),
+    ("Synthwave", "Синтвейв", "g_city"),
+    ("Trap", "Трэп", "g_diamond"),
+    ("Pop", "Поп", "g_star"),
+    ("Rock", "Рок", "g_album"),
+    ("Metal", "Метал", "g_flame"),
+    ("R&B & Soul", "R&B и соул", "heart"),
+    ("Jazz & Blues", "Джаз и блюз", "g_nightlife"),
+    ("Classical", "Классика", "g_piano"),
+    ("Dubstep", "Дабстеп", "g_eq"),
+    ("Deep House", "Дип-хаус", "g_headset"),
+    ("Dance & EDM", "Dance и EDM", "sparkles"),
+    ("Trance", "Транс", "g_infinity"),
+    ("Indie", "Инди", "g_flower"),
+    ("Chill", "Чилл", "g_moon"),
+    ("Soundtrack", "Саундтреки", "g_movie"),
+    ("Reggaeton", "Реггетон", "g_sun"),
 ];
 
 fn genre_label(api: &str) -> String {
     GENRES.iter().find(|g| g.0 == api).map(|g| g.1.to_string()).unwrap_or_else(|| api.to_string())
+}
+
+/// Оттенок жанра — доля второго акцента темы в смеси с первым (0–100 %).
+/// Шаг «золотого сечения» раскладывает оттенки равномерно при любом числе
+/// карточек: соседние различаются, а у жанра везде один и тот же цвет.
+fn genre_tint(api: &str) -> u32 {
+    let i = GENRES.iter().position(|g| g.0 == api).unwrap_or(0);
+    ((i as f64 * 0.618_034).fract() * 100.0).round() as u32
+}
+
+/// CSS-цвет жанра из палитры текущей темы.
+fn genre_color(api: &str) -> String {
+    format!("color-mix(in oklab, var(--accent2) {}%, var(--accent))", genre_tint(api))
 }
 
 #[component]
@@ -481,33 +494,17 @@ pub fn Search() -> Element {
     };
     let tabs = [("tracks", "Треки"), ("playlists", "Плейлисты"), ("users", "Исполнители"), ("local", "Моя музыка")];
 
-    rsx! {
-        div { class: "page search",
-            div { class: "search-bar glass", "data-el": "search",
-                Icon { name: "search", size: 22 }
-                input {
-                    id: "search-input",
-                    class: "search-input",
-                    autofocus: true,
-                    placeholder: "Что будем слушать?",
-                    value: "{q_now}",
-                    oninput: move |e: FormEvent| query.set(e.value()),
-                }
-                if !q_now.is_empty() {
-                    IconBtn { icon: "close", size: 18, title: "Очистить", onclick: move |_| query.set(String::new()) }
-                }
-            }
-            div { class: "tabs",
-                for (id , label) in tabs {
-                    button {
-                        key: "{id}",
-                        class: if *tab.read() == id { "chip active" } else { "chip" },
-                        "data-el": "chip",
-                        onclick: move |_| tab.set(id),
-                        "{label}"
-                    }
-                }
-            }
+    // Содержимое под вкладками въезжает слева/справа при смене вкладки.
+    // Ключ — вкладка, а при пустом запросе — «idle»: подсказки не дёргаются,
+    // когда вкладку переключают, ещё ничего не набрав.
+    let tab_now: &'static str = *tab.read();
+    let tab_index = tabs.iter().position(|t| t.0 == tab_now).unwrap_or(0);
+    let dir = use_switch_dir(tab_index, "tp-l", "tp-r", "tp-first");
+    let idle = q_now.trim().is_empty();
+    let pane_key = if idle { "idle" } else { tab_now };
+    let pane_cls = if idle { "tp-idle" } else { dir };
+    let pane = rsx! {
+        div { key: "{pane_key}", class: "tab-pane {pane_cls}",
             if q_now.trim().is_empty() {
                 if !recent.is_empty() {
                     Section { title: "Вы искали",
@@ -563,6 +560,38 @@ pub fn Search() -> Element {
                 }
             }
         }
+    };
+
+    rsx! {
+        div { class: "page search",
+            div { class: "search-bar glass", "data-el": "search",
+                Icon { name: "search", size: 22 }
+                input {
+                    id: "search-input",
+                    class: "search-input",
+                    autofocus: true,
+                    placeholder: "Что будем слушать?",
+                    value: "{q_now}",
+                    oninput: move |e: FormEvent| query.set(e.value()),
+                }
+                if !q_now.is_empty() {
+                    IconBtn { icon: "close", size: 18, title: "Очистить", onclick: move |_| query.set(String::new()) }
+                }
+            }
+            div { class: "tabs", "data-glide": ".chip.active",
+                span { class: "glider chip-glider" }
+                for (id , label) in tabs {
+                    button {
+                        key: "{id}",
+                        class: if *tab.read() == id { "chip active" } else { "chip" },
+                        "data-el": "chip",
+                        onclick: move |_| tab.set(id),
+                        "{label}"
+                    }
+                }
+            }
+            {pane}
+        }
     }
 }
 
@@ -571,18 +600,19 @@ pub fn Search() -> Element {
 #[component]
 pub fn GenreGrid(#[props(default = 100)] limit: usize) -> Element {
     let st = app_state();
+    let cards: Vec<(&'static str, &'static str, &'static str, u32)> = GENRES.iter().take(limit).map(|g| (g.0, g.1, g.2, genre_tint(g.0))).collect();
     rsx! {
         div { class: "genre-grid",
-            for (api , label , c1 , c2 , emoji) in GENRES.iter().take(limit) {
+            for (api , label , icon , tint) in cards {
                 button {
                     key: "{api}",
                     class: "genre-card",
                     "data-el": "genre_card",
-                    style: "--g1: {c1}; --g2: {c2};",
+                    style: "--t: {tint}%;",
                     onclick: move |_| navigate(st, Route::Genre(api.to_string())),
-                    span { class: "gc-emoji", "{emoji}" }
+                    span { class: "gc-mark", Icon { name: icon.to_string(), size: 88 } }
+                    span { class: "gc-icon", Icon { name: icon.to_string(), size: 20 } }
                     span { class: "gc-label", "{label}" }
-                    span { class: "gc-shine" }
                 }
             }
         }
@@ -671,7 +701,8 @@ pub fn TrackFeed(source: FeedSource, label: String, #[props(default)] buttons: b
 pub fn Genre(name: String) -> Element {
     let st = app_state();
     let g = GENRES.iter().find(|g| g.0 == name);
-    let gradient = g.map(|g| (g.2.to_string(), g.3.to_string()));
+    // заголовок подкрашен тем же оттенком темы, что и карточка жанра
+    let gradient = g.map(|g| (genre_color(g.0), "var(--accent2)".to_string()));
     let label = genre_label(&name);
     let sc_ready = *st.sc_ready.read();
     rsx! {
@@ -695,7 +726,7 @@ pub fn Favorites() -> Element {
     let n = items.len();
     rsx! {
         div { class: "page",
-            PageHeader { title: "Избранное", kicker: "Библиотека", subtitle: "{n} треков", gradient: Some(("#ec4899".to_string(), "#8b5cf6".to_string())),
+            PageHeader { title: "Избранное", kicker: "Библиотека", subtitle: "{n} треков",
                 PlayButtons { tracks: items.clone(), label: "Избранное" }
             }
             if items.is_empty() {
@@ -744,6 +775,10 @@ pub fn Playlists() -> Element {
                     onclick: move |_| { let mut m = st.modal; m.set(Some(Modal::NewPlaylist { add: None })); },
                     Icon { name: "add", size: 18 } "Новый плейлист"
                 }
+                button { class: "btn ghost", "data-el": "button", title: "Перенести плейлист из Яндекс Музыки или Spotify",
+                    onclick: move |_| { let mut m = st.modal; m.set(Some(Modal::Import)); },
+                    Icon { name: "download", size: 18 } "Импортировать"
+                }
             }
             Section { title: "Мои плейлисты",
                 if local.is_empty() {
@@ -756,123 +791,8 @@ pub fn Playlists() -> Element {
                     }
                 }
             }
-            Section { title: "Импорт из Яндекс Музыки",
-                YandexImport {}
-            }
             if logged {
                 Section { title: "Плейлисты SoundCloud", ScMyPlaylists {} }
-            }
-        }
-    }
-}
-
-#[component]
-fn YandexImport() -> Element {
-    let mut st = app_state();
-    let mut url = use_signal(String::new);
-    let mut token = use_signal(|| svc().yandex.token());
-    let mut busy = use_signal(|| false);
-    let mut status = use_signal(|| None::<(bool, String)>);
-    let mut import = move |_: ()| {
-        let input = url.peek().trim().to_string();
-        if input.is_empty() || *busy.peek() {
-            return;
-        }
-        let token_value = token.peek().trim().to_string();
-        if !token_value.is_empty() {
-            svc().yandex.set_token(&token_value);
-        }
-        busy.set(true);
-        status.set(Some((true, "Загружаю публичный плейлист…".into())));
-        let local = st.local.peek().clone();
-        let sc_ready = *st.sc_ready.peek();
-        spawn(async move {
-            let fetched = bg(async move { svc().yandex.import_playlist(&input).await }).await;
-            let Some(fetched) = fetched else {
-                status.set(Some((false, "Не удалось запустить импорт".into())));
-                busy.set(false);
-                return;
-            };
-            match fetched {
-                Ok(playlist) => {
-                    let title = playlist.title.clone();
-                    let count = playlist.tracks.len();
-                    status.set(Some((true, format!("Ищу {count} треков в SoundCloud и подготавливаю обложки…"))));
-                    let matched = bg(async move {
-                        let sc = if sc_ready { Some(&svc().sc) } else { None };
-                        svc().yandex.match_tracks(&playlist, &local, sc).await
-                    })
-                    .await;
-                    let Some(matched) = matched else {
-                        status.set(Some((false, "Не удалось сопоставить треки".into())));
-                        busy.set(false);
-                        return;
-                    };
-                    let artwork_urls: Vec<String> = matched.iter().take(24).filter_map(|t| t.artwork.clone()).collect();
-                    let _ = bg(async move {
-                        stream::iter(artwork_urls)
-                            .map(|url| async move { let _ = svc().media.image_bytes(&url).await; })
-                            .buffer_unordered(4)
-                            .collect::<Vec<_>>()
-                            .await;
-                    })
-                    .await;
-                    let name = format!("Яндекс · {title}");
-                    let id = {
-                        let mut lib = st.library.write();
-                        let id = lib.create_playlist(&name);
-                        if let Some(p) = lib.playlists.iter_mut().find(|p| p.id == id) {
-                            p.tracks = matched;
-                        }
-                        id
-                    };
-                    let message = format!("Импортировано {count} треков из Яндекс Музыки");
-                    toast(st, ToastKind::Success, message.clone());
-                    status.set(Some((true, format!("{message}. Несопоставленные записи оставлены в плейлисте."))));
-                    busy.set(false);
-                    navigate(st, Route::LocalPlaylist(id));
-                }
-                Err(e) => {
-                    let message = if e.contains("451") || e.contains("401") {
-                        "Яндекс Музыка отклонила API-запрос. Вставьте OAuth-токен из сессии Яндекс Музыки и повторите импорт.".into()
-                    } else {
-                        e
-                    };
-                    status.set(Some((false, message)));
-                    busy.set(false);
-                }
-            }
-        });
-    };
-    rsx! {
-        div { class: "yandex-import",
-            p { class: "set-text", "Вставьте ссылку music.yandex.ru/users/.../playlists/... или music.yandex.ru/playlists/... — треки сопоставятся с локальной библиотекой и SoundCloud." }
-            div { class: "import-row",
-                input {
-                    class: "search-input import-input",
-                    r#type: "url",
-                    placeholder: "https://music.yandex.ru/users/.../playlists/...",
-                    value: "{url}",
-                    oninput: move |e: FormEvent| url.set(e.value()),
-                    onkeydown: move |e: KeyboardEvent| if e.key() == Key::Enter { import(()) },
-                }
-                button { class: "btn primary", disabled: *busy.read(), onclick: move |_| import(()), if *busy.read() { "Импортирую…" } else { "Импортировать" } }
-            }
-            div { class: "import-row yandex-token-row",
-                input {
-                    class: "search-input import-input",
-                    r#type: "password",
-                    placeholder: "OAuth-токен Яндекс Музыки (если API отвечает 401/451)",
-                    value: "{token}",
-                    oninput: move |e: FormEvent| token.set(e.value()),
-                }
-                button { class: "btn ghost", onclick: move |_| {
-                    svc().yandex.set_token(token.peek().trim());
-                    toast(st, ToastKind::Success, "Токен Яндекс Музыки сохранён локально");
-                }, "Сохранить токен" }
-            }
-            if let Some((ok, text)) = status.read().clone() {
-                div { class: if ok { "note ok" } else { "note err" }, "{text}" }
             }
         }
     }
@@ -1050,7 +970,6 @@ pub fn Local() -> Element {
     rsx! {
         div { class: "page",
             PageHeader { title: "Моя музыка", kicker: "Файлы на компьютере", subtitle: "{items.len()} треков · MP3, FLAC, WAV, OGG, M4A",
-                gradient: Some(("#22d3ee".to_string(), "#6366f1".to_string())),
                 PlayButtons { tracks: items.clone(), label: "Моя музыка" }
                 button { class: "btn ghost", "data-el": "button", onclick: add_folder, Icon { name: "folder", size: 18 } "Добавить папку" }
                 button { class: "btn ghost", "data-el": "button", disabled: scanning, onclick: move |_| rescan(st, true),
@@ -1099,6 +1018,9 @@ pub fn SoundCloudPage() -> Element {
     let ready = *st.sc_ready.read();
     let user = st.sc_user.read().clone();
     let mut tab = use_signal(|| "likes");
+    let tabs = [("likes", "Лайки"), ("stream", "Лента"), ("playlists", "Плейлисты")];
+    let current_tab: &'static str = *tab.read();
+    let dir = use_switch_dir(tabs.iter().position(|t| t.0 == current_tab).unwrap_or(0), "tp-l", "tp-r", "tp-first");
     let Some(u) = user.filter(|_| ready) else {
         return rsx! {
             div { class: "page",
@@ -1110,21 +1032,26 @@ pub fn SoundCloudPage() -> Element {
         };
     };
     let art = u.avatar.as_deref().map(|a| image_url(&sc_art_size(a, ArtSize::Large)));
-    let tabs = [("likes", "Лайки"), ("stream", "Лента"), ("playlists", "Плейлисты")];
-    let current_tab: &'static str = *tab.read();
+    // ключ на корне rsx-блока: смена вкладки пересоздаёт и анимирует содержимое
+    let pane = rsx! {
+        div { key: "{current_tab}", class: "tab-pane {dir}",
+            match current_tab {
+                "stream" => rsx! { TrackFeed { source: FeedSource::Stream, label: "Лента SoundCloud", buttons: true } },
+                "playlists" => rsx! { ScMyPlaylists {} },
+                _ => rsx! { TrackFeed { source: FeedSource::Likes, label: "Лайки SoundCloud", buttons: true } },
+            }
+        }
+    };
     rsx! {
         div { class: "page",
             PageHeader { title: "{u.username}", kicker: "Мой SoundCloud", art, round: true }
-            div { class: "tabs",
+            div { class: "tabs", "data-glide": ".chip.active",
+                span { class: "glider chip-glider" }
                 for (id , label) in tabs {
                     button { key: "{id}", class: if *tab.read() == id { "chip active" } else { "chip" }, "data-el": "chip", onclick: move |_| tab.set(id), "{label}" }
                 }
             }
-            match current_tab {
-                "stream" => rsx! { TrackFeed { key: "{current_tab}", source: FeedSource::Stream, label: "Лента SoundCloud", buttons: true } },
-                "playlists" => rsx! { ScMyPlaylists { key: "{current_tab}" } },
-                _ => rsx! { TrackFeed { key: "{current_tab}", source: FeedSource::Likes, label: "Лайки SoundCloud", buttons: true } },
-            }
+            {pane}
         }
     }
 }

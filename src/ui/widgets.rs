@@ -3,6 +3,23 @@
 
 use super::icons::Icon;
 use dioxus::prelude::*;
+use std::cell::Cell;
+use std::rc::Rc;
+
+/// Класс анимации для содержимого вкладки: `fwd`, если новая вкладка дальше по
+/// списку, `back` — если ближе, `first` — при первом показе. Значение стабильно,
+/// пока вкладка не меняется (иначе анимация перезапускалась бы при каждой отрисовке).
+/// Хук: вызывать безусловно, до любых ранних `return`.
+pub fn use_switch_dir(index: usize, back: &'static str, fwd: &'static str, first: &'static str) -> &'static str {
+    let mem = use_hook(|| Rc::new(Cell::new((index, first))));
+    let (prev, cls) = mem.get();
+    if prev == index {
+        return cls;
+    }
+    let cls = if index > prev { fwd } else { back };
+    mem.set((index, cls));
+    cls
+}
 
 #[component]
 pub fn Toggle(value: bool, onchange: EventHandler<bool>) -> Element {
@@ -78,7 +95,8 @@ pub fn Select(value: String, options: Vec<(String, String)>, onchange: EventHand
 #[component]
 pub fn Seg(value: String, options: Vec<(String, String)>, onchange: EventHandler<String>) -> Element {
     rsx! {
-        div { class: "seg", "data-el": "chip",
+        div { class: "seg", "data-el": "chip", "data-glide": ".seg-btn.active",
+            span { class: "glider seg-glider" }
             for (v , label) in options.iter().cloned() {
                 button {
                     class: if v == value { "seg-btn active" } else { "seg-btn" },

@@ -5,10 +5,8 @@
 //! supports public playlists only and keeps the parser tolerant of small response
 //! shape changes.
 
-use crate::model::{Page, Track};
+use crate::import::{ImportPlaylist, ImportTrack, Service};
 use crate::paths::{paths, read_json, write_json};
-use crate::soundcloud::SoundCloud;
-use futures_util::stream::{self, StreamExt};
 use parking_lot::Mutex;
 use reqwest::{Client, Url};
 use reqwest::header::AUTHORIZATION;
@@ -17,7 +15,6 @@ use serde_json::Value;
 
 const PLAYLIST_HANDLER: &str = "https://music.yandex.ru/handlers/playlist.jsx";
 const PLAYLIST_API: &str = "https://api.music.yandex.ru/playlist";
-const MAX_SC_MATCHES: usize = 150;
 
 fn store_path() -> std::path::PathBuf {
     paths().config.join("yandex.json")
@@ -30,24 +27,16 @@ struct YandexStore {
     token: String,
 }
 
+/// Трек в ответе Яндекса (до перевода в общую модель импорта).
 #[derive(Clone, Debug, PartialEq)]
-pub struct YandexTrack {
-    pub id: String,
-    pub title: String,
-    pub artists: String,
-    pub duration_ms: u64,
-    pub artwork: Option<String>,
-    pub album: Option<String>,
-    pub album_id: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct YandexPlaylist {
-    pub title: String,
-    pub owner: String,
-    pub kind: String,
-    pub source_url: String,
-    pub tracks: Vec<YandexTrack>,
+struct YandexTrack {
+    id: String,
+    title: String,
+    artists: String,
+    duration_ms: u64,
+    artwork: Option<String>,
+    album: Option<String>,
+    album_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -92,7 +81,7 @@ impl YandexMusic {
 
     /// Fetch a public Yandex playlist from a regular `/users/.../playlists/...`
     /// link, an iframe link, or a modern `/playlists/<uuid>` link.
-    pub async fn import_playlist(&self, input: &str) -> Result<YandexPlaylist, String> {
+    pub async fn import_playlist(&self, input: &str) -> Result<ImportPlaylist, String> {
         let reference = parse_playlist_url(input)?;
         let (value, owner, kind) = if let Some(uuid) = reference.uuid.clone() {
             let endpoint = format!("{PLAYLIST_API}/{uuid}");
@@ -155,58 +144,6 @@ impl YandexMusic {
 
         parse_playlist(value, owner, kind, reference.source_url)
     }
-
-    /// Match imported Yandex tracks to local files first and SoundCloud second.
-    /// Unmatched entries remain visible as metadata placeholders so the imported
-    /// playlist keeps its original order and can be repaired later.
-    pub async fn match_tracks(&self, playlist: &YandexPlaylist, local: &[Track], sc: Option<&SoundCloud>) -> Vec<Track> {
-        let mut result = vec![None; playlist.tracks.len()];
-        let mut pending = Vec::new();
-        for (index, source) in playlist.tracks.iter().enumerate() {
-            let title = normalize(&source.title);
-            let artist = normalize(&source.artists);
-            if let Some(found) = local.iter().find(|t| normalize(&t.title) == title && artist_matches(&t.artist, &artist)) {
-                result[index] = Some(found.clone());
-                continue;
-            }
-
-            pending.push((index, source.clone()));
-        }
-
-        if let Some(sc) = sc {
-            let resolved = stream::iter(pending.iter().take(MAX_SC_MATCHES).cloned().map(|(index, source)| async move {
-                let title = normalize(&source.title);
-                let artist = normalize(&source.artists);
-                let found = search_soundcloud(sc, &source, &title, &artist).await;
-                (index, found)
-            }))
-            .buffered(4)
-            .collect::<Vec<_>>()
-            .await;
-            for (index, found) in resolved {
-                result[index] = found;
-            }
-        }
-
-        for (index, source) in pending {
-            if result[index].is_none() {
-                result[index] = Some(placeholder(playlist, &source));
-            }
-        }
-        result.into_iter().flatten().collect()
-    }
-}
-
-async fn search_soundcloud(sc: &SoundCloud, source: &YandexTrack, title: &str, artist: &str) -> Option<Track> {
-    let queries = [format!("{} {}", source.artists, source.title), source.title.clone()];
-    for query in queries {
-        if let Ok(Page { items, .. }) = sc.search_tracks(&query).await {
-            if let Some(found) = pick_soundcloud_match(&items, title, artist) {
-                return Some(found.clone());
-            }
-        }
-    }
-    None
 }
 
 fn parse_playlist_url(input: &str) -> Result<PlaylistRef, String> {
@@ -241,7 +178,7 @@ fn parse_playlist_url(input: &str) -> Result<PlaylistRef, String> {
     }
 }
 
-fn parse_playlist(value: Value, owner: String, kind: String, source_url: String) -> Result<YandexPlaylist, String> {
+fn parse_playlist(value: Value, owner: String, kind: String, source_url: String) -> Result<ImportPlaylist, String> {
     let playlist = value.get("playlist").or_else(|| value.get("result")).unwrap_or(&value);
     let title = text(playlist, "title").unwrap_or_else(|| "Плейлист Яндекс Музыки".into());
     let owner = if owner.is_empty() {
@@ -258,7 +195,20 @@ fn parse_playlist(value: Value, owner: String, kind: String, source_url: String)
     if tracks.is_empty() {
         return Err("Яндекс Музыка вернула пустой плейлист или скрыла его треки".into());
     }
-    Ok(YandexPlaylist { title, owner, kind, source_url, tracks })
+    let tracks = tracks
+        .into_iter()
+        .map(|t| ImportTrack {
+            // прежний формат id заглушек — уже импортированные плейлисты не ломаются
+            key: format!("ym:{owner}:{kind}:{}", t.id),
+            permalink: t.album_id.as_ref().map(|album| format!("https://music.yandex.ru/album/{album}/track/{}", t.id)),
+            title: t.title,
+            artists: t.artists,
+            duration_ms: t.duration_ms,
+            artwork: t.artwork,
+            album: t.album,
+        })
+        .collect();
+    Ok(ImportPlaylist { service: Service::Yandex, title, source_url, tracks })
 }
 
 fn parse_track(value: &Value) -> Option<YandexTrack> {
@@ -297,67 +247,6 @@ fn artwork(v: &Value) -> Option<String> {
     Some(url)
 }
 
-fn normalize(value: &str) -> String {
-    value
-        .to_lowercase()
-        .chars()
-        .map(|c| if c == '&' { ' ' } else { c })
-        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
-        .collect::<String>()
-        .split_whitespace()
-        .filter(|word| !matches!(*word, "official" | "audio" | "video" | "lyrics" | "hd"))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn pick_soundcloud_match<'a>(items: &'a [Track], title: &str, artist: &str) -> Option<&'a Track> {
-    let best = items.iter().max_by_key(|t| {
-        let mut score = 0;
-        let candidate_title = normalize(&t.title);
-        if candidate_title == title {
-            score += 5;
-        } else if candidate_title.contains(title) || title.contains(&candidate_title) {
-            score += 2;
-        }
-        if artist_matches(&t.artist, artist) || artist_matches(&t.uploader, artist) {
-            score += 4;
-        }
-        if t.is_blocked() {
-            score -= 5;
-        }
-        score
-    })?;
-    let title_match = normalize(&best.title) == title;
-    let artist_match = artist_matches(&best.artist, artist) || artist_matches(&best.uploader, artist);
-    (title_match || artist_match).then_some(best)
-}
-
-fn artist_matches(candidate: &str, requested: &str) -> bool {
-    let candidate = normalize(candidate);
-    let requested_parts = requested
-        .replace(" feat ", ",")
-        .replace(" ft ", ",")
-        .replace(" featuring ", ",");
-    normalize(requested) == candidate
-        || requested_parts.split(',').any(|part| normalize(part) == candidate)
-}
-
-fn placeholder(playlist: &YandexPlaylist, source: &YandexTrack) -> Track {
-    let permalink = source.album_id.as_ref().map(|album| format!("https://music.yandex.ru/album/{album}/track/{}", source.id));
-    Track {
-        id: format!("ym:{}:{}:{}", playlist.owner, playlist.kind, source.id),
-        title: source.title.clone(),
-        artist: source.artists.clone(),
-        uploader: source.artists.clone(),
-        album: source.album.clone(),
-        duration_ms: source.duration_ms,
-        artwork: source.artwork.clone(),
-        permalink,
-        access: Some("unavailable".into()),
-        ..Default::default()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,11 +261,6 @@ mod tests {
         assert_eq!(b.kind.as_deref(), Some("7"));
         let c = parse_playlist_url("https://music.yandex.ru/playlists/lk.abc").unwrap();
         assert_eq!(c.uuid.as_deref(), Some("lk.abc"));
-    }
-
-    #[test]
-    fn normalizes_names() {
-        assert_eq!(normalize("  MØ - Night!  "), "mø night");
     }
 
     #[test]
@@ -396,7 +280,10 @@ mod tests {
         });
         let playlist = parse_playlist(value, String::new(), "42".into(), "https://music.yandex.ru/playlists/x".into()).unwrap();
         assert_eq!(playlist.title, "Тест");
+        assert_eq!(playlist.service, Service::Yandex);
         assert_eq!(playlist.tracks[0].artists, "Artist");
         assert_eq!(playlist.tracks[0].duration_ms, 123000);
+        // владелец берётся из ответа, если в ссылке его нет; id заглушки — прежнего формата
+        assert!(playlist.tracks[0].key.starts_with("ym:") && playlist.tracks[0].key.ends_with(":42:42"));
     }
 }

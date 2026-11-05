@@ -7,6 +7,7 @@
 
 mod audio;
 mod discord;
+mod import;
 mod library;
 mod lyrics;
 mod media;
@@ -16,6 +17,7 @@ mod sc_login;
 mod services;
 mod settings;
 mod soundcloud;
+mod spotify;
 mod theme;
 mod ui;
 mod yandex;
