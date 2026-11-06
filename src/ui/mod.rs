@@ -27,7 +27,7 @@ use crate::settings::{Settings, WindowEffect};
 use crate::theme::{self, PlayerPos, Side, SidebarPos, ELEMENTS};
 use actions::*;
 use background::Background;
-use chrome::{ResizeHandles, Sidebar, TitleBar};
+use chrome::{style_window_frame, ResizeHandles, Sidebar, TitleBar};
 use dioxus::desktop::{use_asset_handler, use_global_shortcut, use_wry_event_handler, window, HotKeyState};
 use dioxus::prelude::*;
 use lyrics_view::{FullscreenHost, LyricsPanel};
@@ -429,22 +429,6 @@ fn use_autosave<T: Clone + PartialEq + Send + 'static>(sig: Signal<T>, delay_ms:
     });
 }
 
-/// Без системной анимации развёртывания: Windows растягивает снимок
-/// прозрачного окна, и на мгновение оно вспыхивает белым.
-fn disable_window_transitions() {
-    #[cfg(windows)]
-    {
-        use dioxus::desktop::tao::platform::windows::WindowExtWindows;
-        use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED};
-        let hwnd = window().window.hwnd();
-        let on: i32 = 1;
-        // SAFETY: hwnd — живое окно приложения, буфер — один BOOL (i32)
-        unsafe {
-            DwmSetWindowAttribute(hwnd as _, DWMWA_TRANSITIONS_FORCEDISABLED as u32, (&on as *const i32).cast(), 4);
-        }
-    }
-}
-
 /// urn аккаунта SoundCloud, на который сейчас засчитывается время прослушивания.
 pub fn sc_account(st: AppState) -> Option<String> {
     st.sc_user.peek().as_ref().map(|u| u.urn.clone()).filter(|u| !u.is_empty())
@@ -793,7 +777,7 @@ pub fn App() -> Element {
     use_effect(move || window().set_zoom_level(zoom() as f64));
     let on_top = use_memo(move || st.settings.read().always_on_top);
     use_effect(move || window().set_always_on_top(on_top()));
-    use_hook(disable_window_transitions);
+    use_hook(style_window_frame);
     // первый вход в аккаунт SoundCloud: время, наслушанное без входа, переходит к нему
     use_effect(move || {
         let Some(urn) = st.sc_user.read().as_ref().map(|u| u.urn.clone()).filter(|u| !u.is_empty()) else { return };

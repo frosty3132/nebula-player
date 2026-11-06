@@ -79,14 +79,28 @@ code, .mono, kbd { font-family: "Cascadia Code", Consolas, monospace; }
 }
 .app.maximized::after { display: none; }
 
-.app.opening { animation: app-open var(--t-slow) var(--ease-out) both; }
-.app.closing { animation: app-close calc(250ms * var(--anim, 1)) var(--ease) forwards; pointer-events: none; }
+.app.opening { animation: app-open calc(560ms * var(--anim, 1)) var(--ease-out) both; }
+/* закрытие и сворачивание: сначала окно накрывает вуаль цвета фона (стекло
+   под ней ещё размыто), и только потом всё растворяется — без скачка размытия
+   и без тяжёлого filter: blur у всего окна. Длительность совпадает с chrome.rs */
+.app.closing { animation: app-close calc(380ms * var(--anim, 1)) cubic-bezier(.4, 0, .6, 1) forwards; pointer-events: none; }
+.app.closing::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 190;
+  border-radius: inherit;
+  pointer-events: none;
+  background: rgba(var(--bg-rgb), var(--win-alpha));
+  animation: veil-in calc(380ms * var(--anim, 1)) ease-out forwards;
+}
+@keyframes veil-in { from { opacity: 0; } 45%, to { opacity: 1; } }
 .app.no-anim, .app.no-anim * { animation-duration: 0s !important; transition-duration: 0s !important; }
 
 /* открытие/разворачивание окна: само окно только «подъезжает», а проявляется
    через вуаль сверху — без opacity и filter у .app размытие стекла видно сразу */
 @keyframes app-open {
-  from { transform: scale(.96) translateY(10px); }
+  from { transform: scale(.965) translateY(8px); }
   to { transform: none; }
 }
 .app.opening::before {
@@ -97,10 +111,11 @@ code, .mono, kbd { font-family: "Cascadia Code", Consolas, monospace; }
   border-radius: inherit;
   pointer-events: none;
   background: rgba(var(--bg-rgb), var(--win-alpha));
-  animation: veil-out var(--t-slow) var(--ease-out) both;
+  animation: veil-out calc(560ms * var(--anim, 1)) var(--ease-out) both;
 }
 @keyframes app-close {
-  to { opacity: 0; transform: scale(.95) translateY(12px); filter: blur(10px); }
+  45% { opacity: 1; }
+  to { opacity: 0; transform: scale(.95) translateY(10px); }
 }
 
 /* ───────────────────────────── заставка при запуске ─────────────────────────────
@@ -1728,3 +1743,17 @@ textarea, input { user-select: text; }
 .app.pl-float-top[data-col="tight"] .vol-track { width: 70px; }
 .app.pl-float-top[data-col="tight"] .vol-pct,
 .app.pl-float-top[data-col="tight"] .p-left .icon-btn { display: none; }
+
+/* Плеер снизу лежит поверх средней колонки: страница доходит до низа окна и
+   прокручивается под стеклом плеера, а не обрывается над ним. Боковые панели
+   по-прежнему заканчиваются над плеером. */
+.app.pl-bottom .player {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  margin: 0;
+  z-index: 30;
+}
+.app.pl-bottom:not(.player-collapsed) .body > :not(.content) { margin-bottom: calc(var(--player-h) + 12px); }
+.app.pl-bottom:not(.player-collapsed) .page-wrap { padding-bottom: calc(var(--player-h) + 40px); }

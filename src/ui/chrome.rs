@@ -13,6 +13,13 @@ use dioxus::desktop::window;
 use dioxus::prelude::*;
 use std::time::Duration;
 
+/// Сколько ждать анимацию закрытия/сворачивания (`.app.closing` в style.css,
+/// 380 мс × скорость анимаций) или `None`, если анимации выключены.
+fn close_anim_ms(state: AppState) -> Option<u64> {
+    let s = state.settings.peek();
+    (s.open_close_anim && s.animations && !s.low_power).then(|| (380.0 * s.anim_speed.clamp(0.05, 3.0)) as u64 + 30)
+}
+
 /// Сохранить размер/положение окна и состояние, затем закрыть с анимацией.
 pub fn close_app(state: AppState) {
     let mut st = state;
@@ -34,14 +41,10 @@ pub fn close_app(state: AppState) {
     st.settings.peek().save();
     st.library.peek().save();
     save_session(state);
-    let animate = {
-        let s = st.settings.peek();
-        s.open_close_anim && s.animations && !s.low_power
-    };
-    if animate {
+    if let Some(ms) = close_anim_ms(state) {
         st.closing.set(true);
         spawn_forever(async move {
-            tokio::time::sleep(Duration::from_millis(260)).await;
+            tokio::time::sleep(Duration::from_millis(ms)).await;
             window().close();
         });
     } else {
@@ -49,16 +52,63 @@ pub fn close_app(state: AppState) {
     }
 }
 
+/// Системные анимации окна (появление, закрытие, сворачивание) Windows
+/// включены — их выключаем только на время развёртывания: там Windows
+/// растягивает снимок прозрачного окна, и оно вспыхивает белым.
+fn set_window_transitions(enabled: bool) {
+    #[cfg(windows)]
+    {
+        use dioxus::desktop::tao::platform::windows::WindowExtWindows;
+        use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED};
+        let hwnd = window().window.hwnd();
+        let off: i32 = (!enabled).into();
+        // SAFETY: hwnd — живое окно приложения, буфер — один BOOL (i32)
+        unsafe {
+            DwmSetWindowAttribute(hwnd as _, DWMWA_TRANSITIONS_FORCEDISABLED as u32, (&off as *const i32).cast(), 4);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = enabled;
+}
+
+/// Убрать системную рамку Windows 11: светлую обводку и собственное скругление
+/// окна. Углы у Nebula круглее системных, и из-за них выглядывала белая рамка;
+/// окно прозрачное, скругление рисует сама страница.
+pub fn style_window_frame() {
+    #[cfg(windows)]
+    {
+        use dioxus::desktop::tao::platform::windows::WindowExtWindows;
+        use windows_sys::Win32::Graphics::Dwm::{
+            DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
+        };
+        let hwnd = window().window.hwnd();
+        let none: u32 = DWMWA_COLOR_NONE;
+        let corners: i32 = DWMWCP_DONOTROUND;
+        // SAFETY: hwnd — живое окно приложения, буферы — COLORREF (u32) и enum (i32);
+        // на Windows 10 атрибуты не поддерживаются, и вызов просто вернёт ошибку
+        unsafe {
+            DwmSetWindowAttribute(hwnd as _, DWMWA_BORDER_COLOR as u32, (&none as *const u32).cast(), 4);
+            DwmSetWindowAttribute(hwnd as _, DWMWA_WINDOW_CORNER_PREFERENCE as u32, (&corners as *const i32).cast(), 4);
+        }
+    }
+}
+
+/// Развернуть/восстановить окно без белой вспышки.
+pub fn toggle_maximized_quiet() {
+    set_window_transitions(false);
+    window().toggle_maximized();
+    spawn_forever(async move {
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        set_window_transitions(true);
+    });
+}
+
 pub fn minimize_app(state: AppState) {
     let mut st = state;
-    let animate = {
-        let s = st.settings.peek();
-        s.open_close_anim && s.animations && !s.low_power
-    };
-    if animate {
+    if let Some(ms) = close_anim_ms(state) {
         st.closing.set(true);
         spawn_forever(async move {
-            tokio::time::sleep(Duration::from_millis(180)).await;
+            tokio::time::sleep(Duration::from_millis(ms)).await;
             window().set_minimized(true);
             st.closing.set(false);
             st.reopening.set(true);
@@ -92,7 +142,7 @@ pub fn TitleBar() -> Element {
                 }
             },
             ondoubleclick: move |_| {
-                window().toggle_maximized();
+                toggle_maximized_quiet();
                 max_sig.set(window().is_maximized());
             },
             div { class: "tb-left",
@@ -153,7 +203,7 @@ pub fn TitleBar() -> Element {
                         title: if *maximized.read() { "Восстановить" } else { "Развернуть" },
                         onmousedown: move |e| e.stop_propagation(),
                         onclick: move |_| {
-                            window().toggle_maximized();
+                            toggle_maximized_quiet();
                             max_sig.set(window().is_maximized());
                         },
                         span { class: if *maximized.read() { "wb-restore" } else { "wb-max" } }
