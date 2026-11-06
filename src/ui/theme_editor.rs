@@ -212,6 +212,9 @@ fn ShapeCard() -> Element {
                 Slider { value: sh.button_radius.min(40.0), min: 0.0, max: 40.0, step: 1.0, unit: " px", oninput: move |v: f32| edit(st, |t| t.shape.button_radius = if v >= 40.0 { 999.0 } else { v }) }
             }
             Row { label: "Толщина рамок", Slider { value: sh.border_width, min: 0.0, max: 4.0, step: 0.5, decimals: 1, unit: " px", oninput: move |v| edit(st, |t| t.shape.border_width = v) } }
+            Row { label: "Жидкое стекло (как в iOS)", hint: "Молочные панели со световым краем и глубокой тенью",
+                Toggle { value: gl.liquid, onchange: move |v| edit(st, |t| t.glass.liquid = v) }
+            }
             Row { label: "Размытие стекла", Slider { value: gl.blur, min: 0.0, max: 60.0, step: 1.0, unit: " px", oninput: move |v| edit(st, |t| t.glass.blur = v) } }
             Row { label: "Плотность стекла", Slider { value: gl.opacity * 100.0, min: 0.0, max: 100.0, step: 1.0, unit: "%", oninput: move |v: f32| edit(st, |t| t.glass.opacity = v / 100.0) } }
             Row { label: "Насыщенность за стеклом", Slider { value: gl.saturation, min: 50.0, max: 250.0, step: 5.0, unit: "%", oninput: move |v| edit(st, |t| t.glass.saturation = v) } }
@@ -368,6 +371,9 @@ pub fn LayoutTab() -> Element {
             Row { label: "Вид плеера",
                 Seg { value: format!("{:?}", l.player_style), options: opts(&[("Classic", "Классика"), ("Centered", "По центру"), ("Minimal", "Минимум")]),
                     onchange: move |v: String| edit(st, |t| t.layout.player_style = match v.as_str() { "Centered" => PlayerStyle::Centered, "Minimal" => PlayerStyle::Minimal, _ => PlayerStyle::Classic }) }
+            }
+            Row { label: "Дизайн плеера Material 3", hint: "Волнистая полоса прогресса, кнопка-«сквиркл», тональные кнопки — как MD3-плеер",
+                Toggle { value: l.player_md3, onchange: move |v| edit(st, |t| t.layout.player_md3 = v) }
             }
             Row { label: "Высота плеера", Slider { value: l.player_height, min: 64.0, max: 140.0, step: 2.0, unit: " px", oninput: move |v| edit(st, |t| t.layout.player_height = v) } }
             Row { label: "Панель текста",

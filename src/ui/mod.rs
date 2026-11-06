@@ -644,6 +644,8 @@ pub fn App() -> Element {
     use_effect(move || svc().player.set_dsp(dsp()));
     let ahead = use_memo(move || st.settings.read().read_ahead_s);
     use_effect(move || svc().player.set_read_ahead(ahead() as u64 * 1000));
+    let crossfade = use_memo(move || st.settings.read().crossfade_s);
+    use_effect(move || svc().player.set_crossfade((crossfade() * 1000.0).round() as u64));
     let device = use_memo(move || st.settings.read().output_device.clone());
     let first_device = use_hook(|| Rc::new(Cell::new(true)));
     use_effect(move || {
@@ -745,6 +747,8 @@ pub fn App() -> Element {
         },
         if *maximized.read() { "maximized" } else { "" },
         if player_collapsed { "player-collapsed" } else { "" },
+        if st.theme.read().glass.liquid { "glass-liquid" } else { "" },
+        if layout.player_md3 { "md3" } else { "" },
         if matches!(pstate, PlaybackState::Playing | PlaybackState::Buffering) { "is-playing" } else { "is-paused" },
     ]
     .iter()

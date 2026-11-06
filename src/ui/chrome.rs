@@ -96,7 +96,8 @@ pub fn TitleBar() -> Element {
                 max_sig.set(window().is_maximized());
             },
             div { class: "tb-left",
-                if top_dock || layout.titlebar_title {
+                // с верхней панелью логотип стоит над ней (см. tb-center)
+                if !top_dock && layout.titlebar_title {
                     div { class: "tb-brand",
                         span { class: "tb-logo", dangerous_inner_html: LOGO_SVG }
                         span { class: "tb-name", "Nebula" }
@@ -108,12 +109,19 @@ pub fn TitleBar() -> Element {
                 }
             }
             div { class: "tb-center",
-                // островок (свёрнутый плеер) — слева от панели разделов
-                if collapsed {
-                    Island {}
-                }
                 if top_dock {
-                    Dock { nav: layout.nav.clone(), route: route.clone() }
+                    div { class: "tb-brand above",
+                        span { class: "tb-name", "Nebula" }
+                    }
+                }
+                div { class: "tb-row",
+                    // островок (свёрнутый плеер) — слева от панели разделов
+                    if collapsed {
+                        Island {}
+                    }
+                    if top_dock {
+                        Dock { nav: layout.nav.clone(), route: route.clone() }
+                    }
                 }
             }
             div { class: "tb-right",

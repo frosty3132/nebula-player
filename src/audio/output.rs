@@ -1,19 +1,23 @@
 //! Вывод на звуковое устройство через cpal (WASAPI на Windows).
 //!
-//! Колбэк реального времени только читает lock-free кольцевой буфер (rtrb),
+//! Колбэк реального времени только читает lock-free кольцевые буферы (rtrb),
 //! прогоняет кадры через [`DspChain`] и пишет в буфер устройства.
 //! Никаких аллокаций, системных вызовов и ожиданий внутри колбэка.
+//!
+//! Буферов два («дорожки»): обычно звучит одна, а при плавном переходе между
+//! треками колбэк смешивает уходящую и следующую по равномощной кривой
+//! (cos/sin), после чего следующая становится основной — см. [`Crossfade`].
 
 use super::dsp::{DspChain, DspControl};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SizedSample};
 use parking_lot::Mutex;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Общее состояние кольцевого буфера между декодером и колбэком.
+/// Общее состояние кольцевого буфера (дорожки) между декодером и колбэком.
 pub struct RingCtl {
     pub producer: Mutex<rtrb::Producer<f32>>,
     /// Кадров записано декодером (монотонно).
@@ -22,8 +26,53 @@ pub struct RingCtl {
     pub played: AtomicU64,
     flush_req: AtomicU64,
     flush_ack: AtomicU64,
-    pub paused: AtomicBool,
+    /// Общая пауза — одна на обе дорожки.
+    pub paused: Arc<AtomicBool>,
     pub rate: u32,
+}
+
+/// Управление плавным переходом между дорожками (запросы — из потока плеера,
+/// исполнение — в колбэке).
+#[derive(Default)]
+pub struct Crossfade {
+    /// Дорожка, которая звучит сейчас (0 или 1).
+    pub active: AtomicUsize,
+    frames: AtomicU64,
+    req: AtomicU64,
+    done: AtomicU64,
+    cut_to: AtomicUsize,
+    cut_req: AtomicU64,
+    cut_ack: AtomicU64,
+}
+
+impl Crossfade {
+    /// Начать переход на другую дорожку длиной `frames` кадров.
+    pub fn start(&self, frames: u64) {
+        self.frames.store(frames.max(1), Ordering::Release);
+        self.req.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Идёт ли переход (запрошен, но колбэк его ещё не завершил).
+    pub fn in_progress(&self) -> bool {
+        self.done.load(Ordering::Acquire) < self.req.load(Ordering::Acquire)
+    }
+
+    /// Немедленно закончить переход, оставив звучать дорожку `lane`,
+    /// и дождаться, пока колбэк это сделает.
+    pub fn cut_and_wait(&self, lane: usize) {
+        self.cut_to.store(lane, Ordering::Release);
+        let req = self.cut_req.fetch_add(1, Ordering::AcqRel) + 1;
+        let t0 = Instant::now();
+        while self.cut_ack.load(Ordering::Acquire) < req {
+            if t0.elapsed() > Duration::from_millis(300) {
+                // колбэк не крутится (устройство пропало) — выставляем сами
+                self.active.store(lane, Ordering::Release);
+                self.done.store(self.req.load(Ordering::Acquire), Ordering::Release);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
 }
 
 impl RingCtl {
@@ -47,11 +96,25 @@ impl RingCtl {
 
 pub struct Output {
     _stream: cpal::Stream,
-    pub ring: Arc<RingCtl>,
+    /// Две дорожки: основная и следующая (для плавного перехода).
+    pub lanes: [Arc<RingCtl>; 2],
+    pub xfade: Arc<Crossfade>,
+    pub paused: Arc<AtomicBool>,
     pub rate: u32,
     pub device_name: String,
     pub device_id: Option<String>,
     pub failed: Arc<AtomicBool>,
+}
+
+impl Output {
+    pub fn lane(&self, i: usize) -> &Arc<RingCtl> {
+        &self.lanes[i & 1]
+    }
+
+    /// Дорожка, которая звучит сейчас.
+    pub fn active_lane(&self) -> usize {
+        self.xfade.active.load(Ordering::Acquire) & 1
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -93,95 +156,169 @@ pub fn open(pref: Option<&str>, dsp: Arc<DspControl>, level: Arc<AtomicU32>) -> 
     let config = supported.config();
     let rate = config.sample_rate;
 
-    // 0.5 с стерео: достаточно для сглаживания рывков планировщика,
+    // 0.5 с стерео на дорожку: достаточно для сглаживания рывков планировщика,
     // и при этом перемотка/пауза срабатывают мгновенно
-    let (producer, consumer) = rtrb::RingBuffer::<f32>::new(((rate as usize) / 2) * 2);
-    let ring = Arc::new(RingCtl {
-        producer: Mutex::new(producer),
-        pushed: AtomicU64::new(0),
-        played: AtomicU64::new(0),
-        flush_req: AtomicU64::new(0),
-        flush_ack: AtomicU64::new(0),
-        paused: AtomicBool::new(true),
-        rate,
-    });
+    let paused = Arc::new(AtomicBool::new(true));
+    let mut consumers = Vec::with_capacity(2);
+    let mut rings = Vec::with_capacity(2);
+    for _ in 0..2 {
+        let (producer, consumer) = rtrb::RingBuffer::<f32>::new(((rate as usize) / 2) * 2);
+        consumers.push(consumer);
+        rings.push(Arc::new(RingCtl {
+            producer: Mutex::new(producer),
+            pushed: AtomicU64::new(0),
+            played: AtomicU64::new(0),
+            flush_req: AtomicU64::new(0),
+            flush_ack: AtomicU64::new(0),
+            paused: paused.clone(),
+            rate,
+        }));
+    }
+    let lanes: [Arc<RingCtl>; 2] = [rings[0].clone(), rings[1].clone()];
+    let cons: [rtrb::Consumer<f32>; 2] = {
+        let c1 = consumers.pop().expect("дорожка 1");
+        let c0 = consumers.pop().expect("дорожка 0");
+        [c0, c1]
+    };
+    let xfade = Arc::new(Crossfade::default());
     let failed = Arc::new(AtomicBool::new(false));
 
     use cpal::SampleFormat as F;
+    let args = (lanes.clone(), xfade.clone(), dsp, level, failed.clone());
     let stream = match format {
-        F::F32 => build::<f32>(&device, config, consumer, ring.clone(), dsp, level, failed.clone()),
-        F::I16 => build::<i16>(&device, config, consumer, ring.clone(), dsp, level, failed.clone()),
-        F::U16 => build::<u16>(&device, config, consumer, ring.clone(), dsp, level, failed.clone()),
-        F::I32 => build::<i32>(&device, config, consumer, ring.clone(), dsp, level, failed.clone()),
-        F::F64 => build::<f64>(&device, config, consumer, ring.clone(), dsp, level, failed.clone()),
+        F::F32 => build::<f32>(&device, config, cons, args),
+        F::I16 => build::<i16>(&device, config, cons, args),
+        F::U16 => build::<u16>(&device, config, cons, args),
+        F::I32 => build::<i32>(&device, config, cons, args),
+        F::F64 => build::<f64>(&device, config, cons, args),
         other => return Err(format!("формат сэмплов {other:?} не поддерживается")),
     }?;
     stream.play().map_err(|e| e.to_string())?;
     tracing::info!("аудиовыход: {device_name}, {rate} Гц, {} кан., {format:?}", config.channels);
-    Ok(Output { _stream: stream, ring, rate, device_name, device_id, failed })
+    Ok(Output { _stream: stream, lanes, xfade, paused, rate, device_name, device_id, failed })
 }
 
-fn build<T>(
-    device: &cpal::Device,
-    config: cpal::StreamConfig,
-    mut consumer: rtrb::Consumer<f32>,
-    ring: Arc<RingCtl>,
-    dsp: Arc<DspControl>,
-    level: Arc<AtomicU32>,
-    failed: Arc<AtomicBool>,
-) -> Result<cpal::Stream, String>
+type BuildArgs = ([Arc<RingCtl>; 2], Arc<Crossfade>, Arc<DspControl>, Arc<AtomicU32>, Arc<AtomicBool>);
+
+/// Прочитать до `frames` кадров дорожки в `buf` (без аллокаций при достаточной ёмкости).
+fn pull(consumer: &mut rtrb::Consumer<f32>, frames: usize, buf: &mut Vec<f32>) -> usize {
+    buf.clear();
+    let n = (consumer.slots() / 2).min(frames);
+    if n == 0 {
+        return 0;
+    }
+    if let Ok(chunk) = consumer.read_chunk(n * 2) {
+        let (a, b) = chunk.as_slices();
+        buf.extend_from_slice(a);
+        buf.extend_from_slice(b);
+        chunk.commit_all();
+        n
+    } else {
+        0
+    }
+}
+
+fn build<T>(device: &cpal::Device, config: cpal::StreamConfig, mut cons: [rtrb::Consumer<f32>; 2], args: BuildArgs) -> Result<cpal::Stream, String>
 where
     T: SizedSample + FromSample<f32>,
 {
+    let (lanes, xf, dsp, level, failed) = args;
     let channels = config.channels.max(1) as usize;
     let mut chain = DspChain::new(config.sample_rate as f32);
-    let mut ack = 0u64;
+    let mut acks = [0u64; 2];
+    let mut seen_req = 0u64;
+    let mut seen_cut = 0u64;
+    // (кадров пройдено, всего) — пока идёт переход
+    let mut fading: Option<(u64, u64)> = None;
+    let mut buf_a: Vec<f32> = Vec::with_capacity(32_768);
+    let mut buf_b: Vec<f32> = Vec::with_capacity(32_768);
 
     let data_cb = move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
         chain.refresh(&dsp);
+        let mut active = xf.active.load(Ordering::Acquire) & 1;
 
-        let req = ring.flush_req.load(Ordering::Acquire);
-        if req != ack {
-            let n = consumer.slots();
-            if let Ok(chunk) = consumer.read_chunk(n) {
-                chunk.commit_all();
+        for i in 0..2 {
+            let req = lanes[i].flush_req.load(Ordering::Acquire);
+            if req != acks[i] {
+                let n = cons[i].slots();
+                if let Ok(chunk) = cons[i].read_chunk(n) {
+                    chunk.commit_all();
+                }
+                lanes[i].played.fetch_add((n / 2) as u64, Ordering::AcqRel);
+                acks[i] = req;
+                lanes[i].flush_ack.store(req, Ordering::Release);
+                if i == active && fading.is_none() {
+                    chain.restart_fade();
+                }
             }
-            ring.played.fetch_add((n / 2) as u64, Ordering::AcqRel);
-            ack = req;
-            ring.flush_ack.store(req, Ordering::Release);
-            chain.restart_fade();
         }
 
-        let paused = ring.paused.load(Ordering::Relaxed);
+        // новый переход / досрочное завершение
+        let req = xf.req.load(Ordering::Acquire);
+        if req != seen_req {
+            seen_req = req;
+            fading = Some((0, xf.frames.load(Ordering::Acquire).max(1)));
+        }
+        let cut = xf.cut_req.load(Ordering::Acquire);
+        if cut != seen_cut {
+            seen_cut = cut;
+            active = xf.cut_to.load(Ordering::Acquire) & 1;
+            xf.active.store(active, Ordering::Release);
+            fading = None;
+            xf.done.store(seen_req, Ordering::Release);
+            xf.cut_ack.store(cut, Ordering::Release);
+        }
+
+        let paused = lanes[0].paused.load(Ordering::Relaxed);
         let target = if paused { 0.0 } else { 1.0 };
         let frames = data.len() / channels;
-        let mut played = 0u64;
-
-        // во время полной паузы буфер не трогаем — позиция стоит на месте
-        let readable = if paused && chain.is_silent() { 0 } else { (consumer.slots() / 2).min(frames) };
-        let mut frames_iter = data.chunks_mut(channels);
-        if readable > 0 {
-            if let Ok(chunk) = consumer.read_chunk(readable * 2) {
-                let (a, b) = chunk.as_slices();
-                let mut it = a.iter().chain(b.iter());
-                while let (Some(&l), Some(&r)) = (it.next(), it.next()) {
-                    let (l, r) = chain.process(l, r, target);
-                    if let Some(frame) = frames_iter.next() {
-                        write_frame(frame, l, r);
-                    }
-                    played += 1;
-                }
-                chunk.commit_all();
-            }
+        if buf_a.capacity() < frames * 2 {
+            buf_a.reserve(frames * 2);
+            buf_b.reserve(frames * 2);
         }
-        // недобор (буферизация/пауза) — тишина, огибающая продолжает идти
-        for frame in frames_iter {
-            let (l, r) = chain.process(0.0, 0.0, target);
+
+        // во время полной паузы буферы не трогаем — позиция стоит на месте
+        let hold = paused && chain.is_silent();
+        let other = active ^ 1;
+        let na = if hold { 0 } else { pull(&mut cons[active], frames, &mut buf_a) };
+        let nb = if hold || fading.is_none() { 0 } else { pull(&mut cons[other], frames, &mut buf_b) };
+        // после завершения перехода посреди блока звучит уже вторая дорожка
+        let mut switched = false;
+
+        for (i, frame) in data.chunks_mut(channels).enumerate() {
+            let a = if i < na { (buf_a[2 * i], buf_a[2 * i + 1]) } else { (0.0, 0.0) };
+            let b = if i < nb { (buf_b[2 * i], buf_b[2 * i + 1]) } else { (0.0, 0.0) };
+            let (l, r) = if switched {
+                b
+            } else if let Some((pos, total)) = fading.as_mut() {
+                let t = (*pos as f32 / *total as f32).min(1.0);
+                let (ga, gb) = ((t * std::f32::consts::FRAC_PI_2).cos(), (t * std::f32::consts::FRAC_PI_2).sin());
+                // переход идёт только пока есть звук — пауза и буферизация его не съедают
+                if i < na || i < nb {
+                    *pos += 1;
+                }
+                let mixed = (a.0 * ga + b.0 * gb, a.1 * ga + b.1 * gb);
+                if *pos >= *total {
+                    switched = true;
+                }
+                mixed
+            } else {
+                a
+            };
+            let (l, r) = chain.process(l, r, target);
             write_frame(frame, l, r);
         }
 
-        if played > 0 {
-            ring.played.fetch_add(played, Ordering::AcqRel);
+        if na > 0 {
+            lanes[active].played.fetch_add(na as u64, Ordering::AcqRel);
+        }
+        if nb > 0 {
+            lanes[other].played.fetch_add(nb as u64, Ordering::AcqRel);
+        }
+        if switched {
+            fading = None;
+            xf.active.store(other, Ordering::Release);
+            xf.done.store(seen_req, Ordering::Release);
         }
         chain.end_block();
         if let Some(lv) = chain.take_level() {

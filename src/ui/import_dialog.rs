@@ -198,8 +198,11 @@ fn start_import(st: AppState, service: Service, input: String, busy: Signal<bool
         let playlist = match fetched {
             Ok(p) => p,
             Err(e) => {
-                let e = if service == Service::Yandex && (e.contains("451") || e.contains("401")) {
-                    "Яндекс Музыка отклонила запрос. Укажите OAuth-токен из сессии Яндекс Музыки и повторите импорт.".to_string()
+                let e = if service == Service::Yandex && e.contains("451") {
+                    // проверено: без токена API Яндекса отвечает 451 на любой запрос вне РФ/СНГ
+                    "Яндекс Музыка не отдаёт плейлисты в вашем регионе (ответ 451): её API работает только из России и стран СНГ. Укажите OAuth-токен своего аккаунта Яндекса — с ним запросы обычно проходят — или подключитесь через российский IP.".to_string()
+                } else if service == Service::Yandex && e.contains("401") {
+                    "Яндекс не принял OAuth-токен (ответ 401): он устарел или скопирован не целиком. Получите новый и сохраните его заново.".to_string()
                 } else {
                     e
                 };

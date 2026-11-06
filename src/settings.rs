@@ -98,6 +98,8 @@ pub struct Settings {
     // ─── воспроизведение ───
     pub autoplay_related: bool,
     pub preload_next: bool,
+    /// Плавный переход между треками (кроссфейд), секунды; 0 — выключен.
+    pub crossfade_s: f32,
     pub remember_session: bool,
     pub skip_previews: bool,
     pub shuffle: bool,
@@ -169,6 +171,7 @@ impl Default for Settings {
             read_ahead_s: 240,
             autoplay_related: true,
             preload_next: true,
+            crossfade_s: 6.0,
             remember_session: true,
             skip_previews: false,
             shuffle: false,
@@ -236,6 +239,7 @@ impl Settings {
         self.volume_step = self.volume_step.clamp(0.01, 0.25);
         self.ui_scale = self.ui_scale.clamp(0.6, 1.8);
         self.anim_speed = self.anim_speed.clamp(0.25, 3.0);
+        self.crossfade_s = self.crossfade_s.clamp(0.0, 12.0);
         self.lyrics_font = self.lyrics_font.clamp(12.0, 64.0);
         self.lyrics_width = self.lyrics_width.clamp(260.0, 900.0);
         self.fade_ms = self.fade_ms.clamp(0.0, 2000.0);

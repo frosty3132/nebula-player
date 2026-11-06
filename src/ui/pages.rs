@@ -189,30 +189,15 @@ fn Hero() -> Element {
         _ => "Доброй ночи",
     };
     let sc_ready = *st.sc_ready.read();
-    let mut q = use_signal(String::new);
+    // в приветствии — никнейм аккаунта SoundCloud, без входа — «путешественник»
+    let name = st.sc_user.read().as_ref().map(|u| u.username.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| "путешественник".to_string());
     rsx! {
         section { class: "hero glass", "data-el": "hero",
             div { class: "hero-orbit", span {} span {} span {} }
             div { class: "hero-text",
-                div { class: "ph-kicker", "✦ Nebula" }
-                h1 { class: "hero-title", "{greeting}, путешественник" }
+                h1 { class: "hero-title", "{greeting}, {name}" }
                 p { class: "hero-sub", "Музыка из SoundCloud и с вашего компьютера, синхронные тексты из LRCLIB и интерфейс, который меняется как вам угодно." }
-                div { class: "hero-search", "data-el": "search",
-                    Icon { name: "search", size: 20 }
-                    input {
-                        class: "hero-input",
-                        placeholder: "Найти трек, исполнителя или плейлист…",
-                        value: "{q}",
-                        oninput: move |e: FormEvent| q.set(e.value()),
-                        onkeydown: move |e: KeyboardEvent| {
-                            if e.key() == Key::Enter && !q.peek().trim().is_empty() {
-                                let mut sq = st.search_query;
-                                sq.set(q.peek().clone());
-                                navigate(st, Route::Search);
-                            }
-                        },
-                    }
-                }
+                ListeningStats { class: "in-hero" }
                 if !sc_ready {
                     div { class: "hero-note",
                         Icon { name: "cloud", size: 18 }
@@ -248,8 +233,23 @@ fn ContinueCard() -> Element {
     }
 }
 
+/// Отдельный раздел «Время прослушивания» — только если шапка главной скрыта:
+/// иначе та же статистика уже показана в шапке.
 #[component]
 fn ListeningSection() -> Element {
+    let st = app_state();
+    let hero_visible = st.theme.read().layout.home.iter().any(|e| e.id == "hero" && e.visible);
+    if hero_visible {
+        return rsx! {};
+    }
+    rsx! {
+        Section { title: "Время прослушивания", ListeningStats {} }
+    }
+}
+
+/// Статистика прослушивания: сколько всего наслушано в Nebula и любимый трек.
+#[component]
+fn ListeningStats(#[props(default)] class: String) -> Element {
     let st = app_state();
     let library = st.library.read().clone();
     let stats = library.listening.clone();
@@ -268,8 +268,7 @@ fn ListeningSection() -> Element {
                 .map(|t| (t, *ms))
         });
     rsx! {
-        Section { title: "Время прослушивания",
-            div { class: "listening-panel glass", "data-el": "listening_stats",
+        div { class: "listening-panel glass {class}", "data-el": "listening_stats",
                 div { class: "listening-total",
                     div { class: "listening-label", "Всего в Nebula" }
                     strong { "{fmt_listening(total)}" }
@@ -290,7 +289,6 @@ fn ListeningSection() -> Element {
                 if stats.imported_ms > 0 {
                     span { class: "listening-imported", "Импортировано: {fmt_listening(stats.imported_ms)}" }
                 }
-            }
         }
     }
 }
@@ -507,10 +505,33 @@ pub fn Search() -> Element {
         div { key: "{pane_key}", class: "tab-pane {pane_cls}",
             if q_now.trim().is_empty() {
                 if !recent.is_empty() {
-                    Section { title: "Вы искали",
+                    section { class: "section",
+                        div { class: "section-head",
+                            h2 { class: "section-title", "data-el": "section_title", "Вы искали" }
+                            button { class: "link-btn", title: "Удалить всю историю поиска",
+                                onclick: move |_| {
+                                    let mut lib = st.library;
+                                    lib.write().recent_searches.clear();
+                                    toast(st, ToastKind::Success, "История поиска очищена");
+                                },
+                                "Очистить"
+                            }
+                        }
                         div { class: "chips",
                             for r in recent {
-                                button { class: "chip", "data-el": "chip", onclick: move |_| query.set(r.clone()), "{r}" }
+                                span { key: "{r}", class: "chip removable", "data-el": "chip",
+                                    button { class: "chip-main", onclick: { let r = r.clone(); move |_| query.set(r.clone()) }, "{r}" }
+                                    button { class: "chip-x", title: "Убрать из истории",
+                                        onclick: {
+                                            let r = r.clone();
+                                            move |_| {
+                                                let mut lib = st.library;
+                                                lib.write().recent_searches.retain(|x| x != &r);
+                                            }
+                                        },
+                                        "×"
+                                    }
+                                }
                             }
                         }
                     }

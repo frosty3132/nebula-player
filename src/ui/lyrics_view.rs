@@ -4,7 +4,7 @@
 
 use super::actions::*;
 use super::icons::Icon;
-use super::player_bar::{Controls, Cover, Progress};
+use super::player_bar::{Controls, Cover, Progress, Volume};
 use super::state::*;
 use super::widgets::{IconBtn, Spinner};
 use crate::lyrics::{guess_artist_title, Lyrics};
@@ -16,6 +16,36 @@ use dioxus::prelude::*;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
+
+/// Прокрутка текста к активной строке «волной», как в Apple Music: список
+/// сразу встаёт на место, а каждая строка догоняет его со своей задержкой
+/// (FLIP через Web Animations, свойство `translate` — не мешает масштабу
+/// активной строки). Без анимаций или при большом прыжке — сразу на место.
+const LYRICS_SCROLL_JS: &str = r#"(() => {
+  const el = document.getElementById("__ID__");
+  if (!el) return;
+  const sc = el.closest(".ly-body");
+  if (!sc) { el.scrollIntoView({ block: "center" }); return; }
+  const r = el.getBoundingClientRect(), b = sc.getBoundingClientRect();
+  const max = sc.scrollHeight - sc.clientHeight;
+  const target = Math.max(0, Math.min(max, sc.scrollTop + (r.top - b.top) - (sc.clientHeight - r.height) / 2));
+  const delta = target - sc.scrollTop;
+  if (Math.abs(delta) < 1) return;
+  sc.scrollTo({ top: target, behavior: "instant" });
+  if (!__SMOOTH__ || Math.abs(delta) > sc.clientHeight * 1.5) return;
+  const k = parseFloat(getComputedStyle(sc).getPropertyValue("--anim")) || 1;
+  const lines = Array.from(sc.querySelectorAll(".ly-line"));
+  const ai = lines.indexOf(el);
+  lines.forEach((ln, i) => {
+    const d = i - ai;
+    if (d < -6 || d > 10) return; // за краями всё равно не видно
+    // строки выше активной трогаются первыми, ниже — с нарастающей задержкой
+    const delay = Math.max(0, d + 2) * 38 * k;
+    ln.getAnimations().forEach((a) => { if (a.id === "ly-wave") a.cancel(); });
+    const anim = ln.animate([{ translate: `0 ${delta}px` }, { translate: "0 0" }], { duration: 640 * k, delay, easing: "cubic-bezier(.22, 1, .36, 1)", fill: "backwards" });
+    anim.id = "ly-wave";
+  });
+})()"#;
 
 #[component]
 fn LyricsBody(prefix: String, #[props(default)] big: bool) -> Element {
@@ -47,10 +77,7 @@ fn LyricsBody(prefix: String, #[props(default)] big: bool) -> Element {
             Some(i) => format!("{px}-{i}"),
             None => format!("{px}-top"),
         };
-        document::eval(&format!(
-            "document.getElementById('{id}')?.scrollIntoView({{behavior: '{}', block: 'center'}});",
-            if smooth { "smooth" } else { "auto" }
-        ));
+        document::eval(&LYRICS_SCROLL_JS.replace("__ID__", &id).replace("__SMOOTH__", if smooth { "true" } else { "false" }));
     });
 
     let state = st.lyrics.read().clone();
@@ -244,6 +271,7 @@ pub fn FullscreenLyrics() -> Element {
                     div { class: "fs-controls",
                         Progress {}
                         Controls { order }
+                        div { class: "fs-volume", Volume {} }
                     }
                 }
                 div { class: "fs-right", LyricsBody { prefix: "lf", big: true } }
