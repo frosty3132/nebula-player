@@ -9,6 +9,7 @@
 //! (cos/sin), после чего следующая становится основной — см. [`Crossfade`].
 
 use super::dsp::{DspChain, DspControl};
+use super::spectrum::{Analyzer, Spectrum};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SizedSample};
 use parking_lot::Mutex;
@@ -142,7 +143,7 @@ pub fn default_device_id() -> Option<String> {
     cpal::default_host().default_output_device().and_then(|d| d.id().ok()).map(|i| i.to_string())
 }
 
-pub fn open(pref: Option<&str>, dsp: Arc<DspControl>, level: Arc<AtomicU32>) -> Result<Output, String> {
+pub fn open(pref: Option<&str>, dsp: Arc<DspControl>, level: Arc<AtomicU32>, spectrum: Arc<Spectrum>) -> Result<Output, String> {
     let host = cpal::default_host();
     let device = pref
         .and_then(|id| cpal::DeviceId::from_str(id).ok())
@@ -184,7 +185,7 @@ pub fn open(pref: Option<&str>, dsp: Arc<DspControl>, level: Arc<AtomicU32>) -> 
     let failed = Arc::new(AtomicBool::new(false));
 
     use cpal::SampleFormat as F;
-    let args = (lanes.clone(), xfade.clone(), dsp, level, failed.clone());
+    let args = (lanes.clone(), xfade.clone(), dsp, level, failed.clone(), spectrum);
     let stream = match format {
         F::F32 => build::<f32>(&device, config, cons, args),
         F::I16 => build::<i16>(&device, config, cons, args),
@@ -198,7 +199,7 @@ pub fn open(pref: Option<&str>, dsp: Arc<DspControl>, level: Arc<AtomicU32>) -> 
     Ok(Output { _stream: stream, lanes, xfade, paused, rate, device_name, device_id, failed })
 }
 
-type BuildArgs = ([Arc<RingCtl>; 2], Arc<Crossfade>, Arc<DspControl>, Arc<AtomicU32>, Arc<AtomicBool>);
+type BuildArgs = ([Arc<RingCtl>; 2], Arc<Crossfade>, Arc<DspControl>, Arc<AtomicU32>, Arc<AtomicBool>, Arc<Spectrum>);
 
 /// Прочитать до `frames` кадров дорожки в `buf` (без аллокаций при достаточной ёмкости).
 fn pull(consumer: &mut rtrb::Consumer<f32>, frames: usize, buf: &mut Vec<f32>) -> usize {
@@ -222,7 +223,8 @@ fn build<T>(device: &cpal::Device, config: cpal::StreamConfig, mut cons: [rtrb::
 where
     T: SizedSample + FromSample<f32>,
 {
-    let (lanes, xf, dsp, level, failed) = args;
+    let (lanes, xf, dsp, level, failed, spectrum) = args;
+    let mut analyzer = Analyzer::new(config.sample_rate);
     let channels = config.channels.max(1) as usize;
     let mut chain = DspChain::new(config.sample_rate as f32);
     let mut acks = [0u64; 2];
@@ -284,6 +286,8 @@ where
         let nb = if hold || fading.is_none() { 0 } else { pull(&mut cons[other], frames, &mut buf_b) };
         // после завершения перехода посреди блока звучит уже вторая дорожка
         let mut switched = false;
+        // анализатор спектра — только пока визуализатор на экране и есть звук
+        let viz = !hold && spectrum.enabled.load(Ordering::Relaxed);
 
         for (i, frame) in data.chunks_mut(channels).enumerate() {
             let a = if i < na { (buf_a[2 * i], buf_a[2 * i + 1]) } else { (0.0, 0.0) };
@@ -305,6 +309,9 @@ where
             } else {
                 a
             };
+            if viz {
+                analyzer.push(0.5 * (l + r));
+            }
             let (l, r) = chain.process(l, r, target);
             write_frame(frame, l, r);
         }
@@ -320,6 +327,7 @@ where
             xf.active.store(other, Ordering::Release);
             xf.done.store(seen_req, Ordering::Release);
         }
+        analyzer.publish(&spectrum, viz);
         chain.end_block();
         if let Some(lv) = chain.take_level() {
             level.store(lv.to_bits(), Ordering::Relaxed);

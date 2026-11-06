@@ -48,6 +48,9 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 window-vibrancy = "0.8"
 discord-rich-presence = "1.1"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
+
 [profile.dev]
 opt-level = 1
 

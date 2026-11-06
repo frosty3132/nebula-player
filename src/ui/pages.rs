@@ -178,6 +178,63 @@ pub fn Home() -> Element {
     }
 }
 
+/// Сколько визуализаторов сейчас на экране (уходящая страница может
+/// исчезать, пока новая уже показала свой) — анализатор работает, пока > 0.
+static VISUALIZERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Принимает полосы спектра и выставляет высоту столбиков текущей страницы.
+const CAVA_JS: &str = r#"
+while (true) {
+  const v = await dioxus.recv();
+  const bars = document.querySelectorAll(".page-wrap.current .cava i");
+  for (let i = 0; i < bars.length; i++) bars[i].style.setProperty("--h", (v[i] || 0).toFixed(3));
+}
+"#;
+
+/// Визуализатор спектра в духе cava (github.com/karlstav/cava) внутри
+/// планеты на главной: 24 столбика от низких частот к высоким, растут от
+/// центра. Данные — анализатор в аудиоколбэке, ~30 обновлений в секунду;
+/// в тишине и на паузе ничего не отправляется.
+#[component]
+fn Visualizer() -> Element {
+    use std::sync::atomic::Ordering;
+    use_hook(|| {
+        VISUALIZERS.fetch_add(1, Ordering::Relaxed);
+        svc().player.set_visualizer(true);
+    });
+    use_drop(|| {
+        if VISUALIZERS.fetch_sub(1, Ordering::Relaxed) <= 1 {
+            svc().player.set_visualizer(false);
+        }
+    });
+    use_future(|| async move {
+        let ev = document::eval(CAVA_JS);
+        let mut quiet = 0u32;
+        loop {
+            tokio::time::sleep(Duration::from_millis(33)).await;
+            let v = svc().player.spectrum();
+            if v.iter().all(|x| *x < 0.004) {
+                quiet += 1;
+                // пару кадров нулей — чтобы столбики опустились, дальше тишина
+                if quiet > 3 {
+                    continue;
+                }
+            } else {
+                quiet = 0;
+            }
+            let vals: Vec<f32> = v.iter().map(|x| (x * 1000.0).round() / 1000.0).collect();
+            let _ = ev.send(vals);
+        }
+    });
+    rsx! {
+        div { class: "cava", "aria-hidden": "true",
+            for i in 0..crate::audio::SPECTRUM_BANDS {
+                i { key: "{i}" }
+            }
+        }
+    }
+}
+
 #[component]
 fn Hero() -> Element {
     let st = app_state();
@@ -191,13 +248,25 @@ fn Hero() -> Element {
     let sc_ready = *st.sc_ready.read();
     // в приветствии — никнейм аккаунта SoundCloud, без входа — «путешественник»
     let name = st.sc_user.read().as_ref().map(|u| u.username.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| "путешественник".to_string());
+    let viz = {
+        let s = st.settings.read();
+        s.visualizer && !s.low_power
+    };
+    // статистика в шапке подчиняется переключателю «Время прослушивания»
+    let stats_on = st.theme.read().layout.home.iter().find(|e| e.id == "listening").is_none_or(|e| e.visible);
     rsx! {
         section { class: "hero glass", "data-el": "hero",
-            div { class: "hero-orbit", span {} span {} span {} }
+            div { class: "hero-orbit", span {} span {} span {}
+                if viz {
+                    Visualizer {}
+                }
+            }
             div { class: "hero-text",
                 h1 { class: "hero-title", "{greeting}, {name}" }
                 p { class: "hero-sub", "Музыка из SoundCloud и с вашего компьютера, синхронные тексты из LRCLIB и интерфейс, который меняется как вам угодно." }
-                ListeningStats { class: "in-hero" }
+                if stats_on {
+                    ListeningStats { class: "in-hero" }
+                }
                 if !sc_ready {
                     div { class: "hero-note",
                         Icon { name: "cloud", size: 18 }
@@ -252,7 +321,13 @@ fn ListeningSection() -> Element {
 fn ListeningStats(#[props(default)] class: String) -> Element {
     let st = app_state();
     let library = st.library.read().clone();
-    let stats = library.listening.clone();
+    // время привязано к аккаунту SoundCloud; без входа — гостевая статистика
+    let account = st.sc_user.read().as_ref().filter(|u| !u.urn.is_empty()).map(|u| (u.urn.clone(), u.username.trim().to_string()));
+    let stats = library.listening_for(account.as_ref().map(|(urn, _)| urn.as_str()));
+    let label = match &account {
+        Some((_, name)) if !name.is_empty() => format!("Всего · {name}"),
+        _ => "Всего в Nebula".to_string(),
+    };
     let total = stats.total_with_imported();
     let top = stats
         .by_track_ms
@@ -270,7 +345,7 @@ fn ListeningStats(#[props(default)] class: String) -> Element {
     rsx! {
         div { class: "listening-panel glass {class}", "data-el": "listening_stats",
                 div { class: "listening-total",
-                    div { class: "listening-label", "Всего в Nebula" }
+                    div { class: "listening-label", "{label}" }
                     strong { "{fmt_listening(total)}" }
                     span { class: "listening-caption",
                         if total == 0 { "Начните слушать — статистика обновится автоматически" } else { "Счётчик учитывает только реально проигранное время" }

@@ -116,22 +116,34 @@ pub fn play_list(state: AppState, tracks: Vec<Track>, start: usize, label: &str)
         let s = state.settings.peek();
         (s.shuffle, s.skip_previews)
     };
-    let mut tracks = tracks;
-    let mut start = start.min(tracks.len() - 1);
-    if skip_previews {
-        let chosen = tracks[start].id.clone();
-        tracks.retain(|t| !t.is_preview() || t.id == chosen);
-        start = tracks.iter().position(|t| t.id == chosen).unwrap_or(0);
-    }
-    tracks.retain(|t| !t.is_blocked());
+    let (tracks, start) = playable_from(tracks, start, skip_previews);
     if tracks.is_empty() {
         toast(state, ToastKind::Error, "Эти треки недоступны для воспроизведения");
         return;
     }
-    let start = start.min(tracks.len() - 1);
     let mut q = state.queue;
     q.write().set(tracks, start, shuffle, label);
     start_current(state, 0, true);
+}
+
+/// Убирает из списка недоступные треки (и превью, если их пропускаем) и
+/// пересчитывает индекс выбранного по позиции, а не по сдвигу: иначе
+/// недоступный трек выше выбранного включал бы соседний снизу. Выбранное
+/// превью остаётся; если сам выбранный недоступен — следующий доступный.
+fn playable_from(tracks: Vec<Track>, start: usize, skip_previews: bool) -> (Vec<Track>, usize) {
+    let start = start.min(tracks.len().saturating_sub(1));
+    let mut out = Vec::with_capacity(tracks.len());
+    let mut new_start = None;
+    for (i, t) in tracks.into_iter().enumerate() {
+        if t.is_blocked() || (skip_previews && t.is_preview() && i != start) {
+            continue;
+        }
+        if i >= start && new_start.is_none() {
+            new_start = Some(out.len());
+        }
+        out.push(t);
+    }
+    (out, new_start.unwrap_or(0))
 }
 
 pub fn play_single(state: AppState, track: Track) {
@@ -317,7 +329,10 @@ fn autoplay_related(state: AppState) {
 
 pub fn toggle_play(state: AppState) {
     let p = *state.pstate.peek();
-    let loaded = state.now.peek().is_some() && !matches!(p, PlaybackState::Idle | PlaybackState::Error);
+    // трек из прошлой сессии показан «на паузе», но в движок ещё не загружен:
+    // «играть» должно загрузить его с сохранённой позиции, а не слать «продолжить»
+    let restored = state.restore_pos.peek().is_some();
+    let loaded = state.now.peek().is_some() && !restored && !matches!(p, PlaybackState::Idle | PlaybackState::Error);
     if !loaded {
         if state.queue.peek().current().is_some() {
             let pos = state.restore_pos.peek().unwrap_or(0);
@@ -507,22 +522,75 @@ fn accent_key(t: &Track) -> Option<String> {
 }
 
 pub fn load_accent(state: AppState, track: &Track) {
-    let mut acc = state.accent;
+    let acc = state.accent;
     if !state.settings.peek().dynamic_accent {
         if acc.peek().is_some() {
-            acc.set(None);
+            fade_accent(state, None);
         }
         return;
     }
     let Some(key) = accent_key(track) else {
-        acc.set(None);
+        fade_accent(state, None);
         return;
     };
     let id = track.id.clone();
     spawn_forever(async move {
         let c = bg(async move { svc().media.accent_for(&key).await }).await.flatten();
         if state.now.peek().as_ref().map(|t| t.id.as_str()) == Some(id.as_str()) {
-            acc.set(c);
+            fade_accent(state, c);
+        }
+    });
+}
+
+fn parse_hex(s: &str) -> Option<(f32, f32, f32)> {
+    let h = s.trim().strip_prefix('#')?;
+    if h.len() != 6 {
+        return None;
+    }
+    let c = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok().map(f32::from);
+    Some((c(0)?, c(2)?, c(4)?))
+}
+
+static ACCENT_GEN: AtomicU64 = AtomicU64::new(0);
+
+/// Плавно перекрасить акцент к цвету обложки (`None` — к цвету темы):
+/// ~0,7 с промежуточными оттенками вместо резкой смены.
+pub fn fade_accent(state: AppState, target: Option<String>) {
+    let mut acc = state.accent;
+    let theme_accent = state.theme.peek().colors.accent.clone();
+    let from = acc.peek().clone().unwrap_or_else(|| theme_accent.clone());
+    let to = target.clone().unwrap_or_else(|| theme_accent.clone());
+    let animate = {
+        let s = state.settings.peek();
+        s.animations && !s.low_power
+    };
+    let gen = ACCENT_GEN.fetch_add(1, Ordering::Relaxed) + 1;
+    let (Some(a), Some(b)) = (parse_hex(&from), parse_hex(&to)) else {
+        acc.set(target);
+        return;
+    };
+    if !animate || from.eq_ignore_ascii_case(&to) {
+        acc.set(target);
+        return;
+    }
+    let k = state.settings.peek().anim_speed.clamp(0.25, 3.0);
+    let steps = 16u32;
+    let step = Duration::from_millis((700.0 * k / steps as f32) as u64);
+    spawn_forever(async move {
+        for i in 1..=steps {
+            tokio::time::sleep(step).await;
+            if ACCENT_GEN.load(Ordering::Relaxed) != gen {
+                return; // уже началась новая смена цвета
+            }
+            let t = i as f32 / steps as f32;
+            let t = t * t * (3.0 - 2.0 * t); // мягкое начало и конец
+            let mix = |x: f32, y: f32| (x + (y - x) * t).round() as u8;
+            let mut acc = state.accent;
+            if i == steps {
+                acc.set(target.clone());
+            } else {
+                acc.set(Some(format!("#{:02x}{:02x}{:02x}", mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))));
+            }
         }
     });
 }
@@ -615,5 +683,29 @@ pub fn restore_session(state: AppState) {
         st.pstate.set(PlaybackState::Paused);
         load_lyrics(state, &t);
         load_accent(state, &t);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn t(id: &str, access: &str) -> Track {
+        Track { id: id.into(), access: (!access.is_empty()).then(|| access.to_string()), ..Default::default() }
+    }
+
+    #[test]
+    fn blocked_tracks_above_do_not_shift_the_choice() {
+        let list = vec![t("a", ""), t("b", "blocked"), t("c", ""), t("d", "")];
+        let (q, i) = playable_from(list, 2, false);
+        assert_eq!(q[i].id, "c");
+        // выбран недоступный — играет следующий доступный
+        let list = vec![t("a", ""), t("b", "blocked"), t("c", "")];
+        let (q, i) = playable_from(list, 1, false);
+        assert_eq!(q[i].id, "c");
+        // превью выше пропускаются, выбранное превью остаётся
+        let list = vec![t("p", "preview"), t("x", "blocked"), t("q", "preview"), t("z", "")];
+        let (q, i) = playable_from(list, 2, true);
+        assert_eq!((q.len(), q[i].id.as_str()), (2, "q"));
     }
 }

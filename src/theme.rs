@@ -171,6 +171,8 @@ pub enum PlayerPos {
     Bottom,
     Top,
     Floating,
+    /// Парящий плеер вверху, под верхней панелью.
+    FloatingTop,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -404,7 +406,10 @@ impl ElementStyle {
         if let Some(v) = self.opacity {
             // каркас не делаем совсем прозрачным — по той же причине, что и не скрываем
             let v = if is_essential(id) { v.max(0.2) } else { v };
-            let _ = write!(d, "opacity:{v} !important;");
+            // без !important: иначе анимации появления/ухода не могут менять
+            // прозрачность, и элемент (например, шапка главной) не гаснет при
+            // переходе на другую вкладку
+            let _ = write!(d, "opacity:{v};");
         }
         if let Some(v) = self.blur {
             let _ = write!(d, "backdrop-filter:blur({v}px) saturate(var(--saturate)) !important;");

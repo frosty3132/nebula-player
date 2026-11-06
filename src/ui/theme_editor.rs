@@ -365,8 +365,8 @@ pub fn LayoutTab() -> Element {
             Row { label: "Логотип в меню", Toggle { value: l.show_logo, onchange: move |v| edit(st, |t| t.layout.show_logo = v) } }
             Row { label: "Название в заголовке окна", Toggle { value: l.titlebar_title, onchange: move |v| edit(st, |t| t.layout.titlebar_title = v) } }
             Row { label: "Плеер",
-                Seg { value: format!("{:?}", l.player), options: opts(&[("Bottom", "Снизу"), ("Top", "Сверху"), ("Floating", "Парящий")]),
-                    onchange: move |v: String| edit(st, |t| t.layout.player = match v.as_str() { "Top" => PlayerPos::Top, "Floating" => PlayerPos::Floating, _ => PlayerPos::Bottom }) }
+                Seg { value: format!("{:?}", l.player), options: opts(&[("Bottom", "Снизу"), ("Top", "Сверху"), ("Floating", "Парящий"), ("FloatingTop", "Парящий сверху")]),
+                    onchange: move |v: String| edit(st, |t| t.layout.player = match v.as_str() { "Top" => PlayerPos::Top, "Floating" => PlayerPos::Floating, "FloatingTop" => PlayerPos::FloatingTop, _ => PlayerPos::Bottom }) }
             }
             Row { label: "Вид плеера",
                 Seg { value: format!("{:?}", l.player_style), options: opts(&[("Classic", "Классика"), ("Centered", "По центру"), ("Minimal", "Минимум")]),

@@ -30,7 +30,7 @@ use background::Background;
 use chrome::{ResizeHandles, Sidebar, TitleBar};
 use dioxus::desktop::{use_asset_handler, use_global_shortcut, use_wry_event_handler, window, HotKeyState};
 use dioxus::prelude::*;
-use lyrics_view::{FullscreenLyrics, LyricsPanel};
+use lyrics_view::{FullscreenHost, LyricsPanel};
 use overlays::{ContextMenu, EditHint, ModalHost, QueuePanel, Toasts};
 use pages::*;
 use player_bar::{EqPanel, PlayerBar};
@@ -125,10 +125,14 @@ new MutationObserver((recs) => { for (const r of recs) r.addedNodes.forEach(scan
   .observe(document.getElementById("main") || document.body, { childList: true, subtree: true });
 scanGlide(document.body);
 
-// Плавная прокрутка колесом мыши: щелчок колеса не прыгает, а мягко докатывает
-// список к цели. Тачпад (мелкие шаги) и Ctrl/Shift+колесо остаются системными,
-// в экономном режиме и без анимаций — обычная прокрутка.
+// Плавная прокрутка колесом мыши: жёсткая пружина с критическим затуханием —
+// список мягко трогается (без скачка в первый кадр) и встаёт за ~0,25 с без
+// долгого «доплывания». Новый щелчок колеса сдвигает цель, скорость
+// сохраняется, поэтому быстрая прокрутка идёт ровно.
+// Тачпад (мелкие шаги) и Ctrl/Shift+колесо остаются системными, в экономном
+// режиме и без анимаций — обычная прокрутка.
 const smoothState = new WeakMap();
+const OMEGA = 20; // 1/с: жёсткость пружины (больше — быстрее встаёт)
 const canScrollY = (el) => {
   if (el.scrollHeight <= el.clientHeight + 1) return false;
   const oy = getComputedStyle(el).overflowY;
@@ -145,22 +149,26 @@ const scrollerFor = (start, dy) => {
   }
   return null;
 };
-const animateScroll = (el) => {
-  const s = smoothState.get(el);
-  let prev = performance.now();
+const animateScroll = (el, s) => {
+  let prev = 0;
   const step = (now) => {
     // пользователь тянет ползунок или жмёт клавиши — уступаем
     if (Math.abs(el.scrollTop - s.last) > 2) { smoothState.delete(el); return; }
-    const dt = Math.min(64, now - prev); prev = now;
-    const k = 1 - Math.pow(1 - 0.16, dt / 16.67);
-    const cur = el.scrollTop;
-    let next = cur + (s.target - cur) * k;
-    if (Math.abs(s.target - next) < 0.5) next = s.target;
-    el.scrollTo({ top: next, behavior: "instant" });
-    // шаг меньше пикселя не сдвигает список — докатываем сразу
-    if (el.scrollTop === cur && next !== s.target) { el.scrollTo({ top: s.target, behavior: "instant" }); next = s.target; }
+    const dt = prev ? Math.min(50, Math.max(0, now - prev)) : 8;
+    prev = now;
+    // мелкие шаги интегрирования — устойчиво при любой частоте кадров
+    for (let left = dt / 1000; left > 0; left -= 1 / 240) {
+      const h = Math.min(left, 1 / 240);
+      s.v += (OMEGA * OMEGA * (s.target - s.pos) - 2 * OMEGA * s.v) * h;
+      s.pos += s.v * h;
+    }
+    const done = Math.abs(s.target - s.pos) < 0.5 && Math.abs(s.v) < 20;
+    if (done) { s.pos = s.target; s.v = 0; }
+    // именно instant: у .page-wrap в CSS scroll-behavior: smooth, и обычное
+    // присваивание запускало бы браузерную докатку поверх нашей — список прыгал
+    el.scrollTo({ top: s.pos, behavior: "instant" });
     s.last = el.scrollTop;
-    if (next === s.target) { smoothState.delete(el); return; }
+    if (done) { smoothState.delete(el); return; }
     requestAnimationFrame(step);
   };
   requestAnimationFrame(step);
@@ -180,14 +188,101 @@ window.addEventListener("wheel", (e) => {
   const max = el.scrollHeight - el.clientHeight;
   let s = smoothState.get(el);
   if (!s) {
-    s = { target: el.scrollTop, last: el.scrollTop };
+    s = { target: el.scrollTop, last: el.scrollTop, pos: el.scrollTop, v: 0 };
     smoothState.set(el, s);
-    s.target = Math.max(0, Math.min(max, s.target + dy));
-    animateScroll(el);
-  } else {
-    s.target = Math.max(0, Math.min(max, s.target + dy));
+    animateScroll(el, s);
+  } else if (Math.sign(dy) !== Math.sign(s.target - s.pos)) {
+    // смена направления — от текущего места, без «отката» к старой цели
+    s.target = s.pos;
   }
+  s.target = Math.max(0, Math.min(max, s.target + dy));
 }, { passive: false });
+// Ползунки перемотки и громкости: заливка двигается прямо за курсором в JS,
+// а значение уходит в Rust не чаще раза за кадр (перемотка — на отпускании).
+// Позицию считаем по самой полосе, без поправки на «бегунок» скрытого input.
+const sliderTracks = () => document.querySelectorAll(".progress, .vol-track");
+const fmtMs = (ms) => { const s = Math.floor(ms / 1000); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
+let slide = null;
+const slideAt = (x) => {
+  const d = slide, r = d.track.getBoundingClientRect();
+  const f = Math.max(0, Math.min(1, (x - r.left) / Math.max(1, r.width)));
+  const min = parseFloat(d.input.min) || 0, max = parseFloat(d.input.max) || 1;
+  const step = parseFloat(d.input.step) || 0;
+  let v = min + f * (max - min);
+  if (step > 0) v = Math.round(v / step) * step;
+  d.track.style.setProperty("--drag-w", (f * 100) + "%");
+  d.input.value = String(v);
+  if (d.vol) {
+    const pct = d.wrap && d.wrap.querySelector(".vol-pct");
+    const shown = Math.abs(v - 1) < 0.025 ? 1 : v;
+    if (pct) pct.textContent = Math.round(shown * 100) + "%";
+  } else {
+    const t = d.wrap && d.wrap.querySelector(".time");
+    if (t) t.textContent = fmtMs(v);
+  }
+  if (!d.raf) d.raf = requestAnimationFrame(() => {
+    d.raf = 0;
+    d.input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+};
+document.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0) return;
+  for (const track of sliderTracks()) {
+    const r = track.getBoundingClientRect();
+    if (!r.width || e.clientX < r.left - 4 || e.clientX > r.right + 4 || e.clientY < r.top - 9 || e.clientY > r.bottom + 9) continue;
+    const input = track.querySelector('input[type="range"]');
+    if (!input || input.disabled) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const vol = track.classList.contains("vol-track");
+    slide = { track, input, vol, wrap: track.closest(vol ? ".volume" : ".progress-wrap"), raf: 0, id: e.pointerId };
+    track.classList.add("dragging");
+    try { track.setPointerCapture(e.pointerId); } catch (_) {}
+    slideAt(e.clientX);
+    return;
+  }
+}, true);
+document.addEventListener("pointermove", (e) => {
+  if (slide && e.pointerId === slide.id) { e.preventDefault(); slideAt(e.clientX); }
+}, true);
+const endSlide = (e) => {
+  if (!slide || (e && e.pointerId !== slide.id)) return;
+  const d = slide; slide = null;
+  if (d.raf) { cancelAnimationFrame(d.raf); d.raf = 0; }
+  d.input.dispatchEvent(new Event("input", { bubbles: true }));
+  d.input.dispatchEvent(new Event("change", { bubbles: true }));
+  // заливка держится на значении курсора, пока Rust не дорисует своё
+  setTimeout(() => d.track.classList.remove("dragging"), 120);
+};
+document.addEventListener("pointerup", endSlide, true);
+document.addEventListener("pointercancel", endSlide, true);
+// островок: родной ползунок, а заливку (--di-p) обновляем сразу
+document.addEventListener("input", (e) => {
+  const i = e.target;
+  if (!(i instanceof HTMLInputElement) || !i.closest(".di-progress")) return;
+  const max = parseFloat(i.max) || 1;
+  i.style.setProperty("--di-p", (parseFloat(i.value) / max * 100) + "%");
+}, true);
+// Границы средней колонки (.content) в CSS-переменных: парящий сверху плеер
+// встаёт ровно над ней и не наезжает на боковые панели.
+let colEl = null;
+const colRO = new ResizeObserver(() => syncCol());
+const syncCol = () => {
+  const app = document.querySelector(".app");
+  const c = document.querySelector("main.content");
+  if (!app || !c) return;
+  if (c !== colEl) { if (colEl) colRO.unobserve(colEl); colEl = c; colRO.observe(c); }
+  const a = app.getBoundingClientRect(), r = c.getBoundingClientRect();
+  app.style.setProperty("--col-l", (r.left - a.left) + "px");
+  app.style.setProperty("--col-w", r.width + "px");
+  // узкая колонка — парящему сверху плееру нужна компактная раскладка
+  // (data-атрибут, а не класс: список классов .app переписывает Rust)
+  const col = r.width < 860 ? "tight" : r.width < 1080 ? "narrow" : "";
+  if (app.dataset.col !== col) app.dataset.col = col;
+};
+addEventListener("resize", syncCol);
+setInterval(syncCol, 1000);
+syncCol();
 await new Promise(() => {});
 "#;
 
@@ -332,6 +427,27 @@ fn use_autosave<T: Clone + PartialEq + Send + 'static>(sig: Signal<T>, delay_ms:
             }
         });
     });
+}
+
+/// Без системной анимации развёртывания: Windows растягивает снимок
+/// прозрачного окна, и на мгновение оно вспыхивает белым.
+fn disable_window_transitions() {
+    #[cfg(windows)]
+    {
+        use dioxus::desktop::tao::platform::windows::WindowExtWindows;
+        use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED};
+        let hwnd = window().window.hwnd();
+        let on: i32 = 1;
+        // SAFETY: hwnd — живое окно приложения, буфер — один BOOL (i32)
+        unsafe {
+            DwmSetWindowAttribute(hwnd as _, DWMWA_TRANSITIONS_FORCEDISABLED as u32, (&on as *const i32).cast(), 4);
+        }
+    }
+}
+
+/// urn аккаунта SoundCloud, на который сейчас засчитывается время прослушивания.
+pub fn sc_account(st: AppState) -> Option<String> {
+    st.sc_user.peek().as_ref().map(|u| u.urn.clone()).filter(|u| !u.is_empty())
 }
 
 fn apply_window_effect(effect: WindowEffect, dark: bool) {
@@ -525,6 +641,7 @@ pub fn App() -> Element {
         let mut stats_flush_at = Instant::now();
         let mut rpc_key = None::<(String, bool)>;
         let mut rpc_sent_at = Instant::now() - Duration::from_secs(30);
+        let mut rpc_sent_pos = 0u64;
         loop {
             let active = st.pstate.peek().is_active();
             tokio::time::sleep(Duration::from_millis(if active { 100 } else { 330 })).await;
@@ -553,7 +670,7 @@ pub fn App() -> Element {
                 // диске чаще, чем раз в несколько секунд.
                 if snap.load_id != stats_load_id && stats_pending_ms > 0 {
                     if let Some(old_track) = stats_pending_track.take() {
-                        st.library.write().record_listening(&old_track, stats_pending_ms);
+                        { let acct = sc_account(st); st.library.write().record_listening(&old_track, stats_pending_ms, acct.as_deref()); }
                     }
                     stats_pending_ms = 0;
                     stats_flush_at = Instant::now();
@@ -565,7 +682,7 @@ pub fn App() -> Element {
                         if delta <= 1_500 {
                             if stats_pending_track.as_ref().is_some_and(|t| t.id != track_id) {
                                 if let Some(old_track) = stats_pending_track.take() {
-                                    st.library.write().record_listening(&old_track, stats_pending_ms);
+                                    { let acct = sc_account(st); st.library.write().record_listening(&old_track, stats_pending_ms, acct.as_deref()); }
                                 }
                                 stats_pending_ms = 0;
                             }
@@ -581,32 +698,47 @@ pub fn App() -> Element {
                 }
                 if snap.state != PlaybackState::Playing && stats_pending_ms > 0 {
                     if let Some(track) = stats_pending_track.take() {
-                        st.library.write().record_listening(&track, stats_pending_ms);
+                        { let acct = sc_account(st); st.library.write().record_listening(&track, stats_pending_ms, acct.as_deref()); }
                     }
                     stats_pending_ms = 0;
                     stats_flush_at = Instant::now();
                 }
                 if stats_pending_ms >= 1_000 && (stats_pending_ms >= 5_000 || stats_flush_at.elapsed() >= Duration::from_secs(5)) {
                     if let Some(track) = stats_pending_track.take() {
-                        st.library.write().record_listening(&track, stats_pending_ms);
+                        { let acct = sc_account(st); st.library.write().record_listening(&track, stats_pending_ms, acct.as_deref()); }
                     }
                     stats_pending_ms = 0;
                     stats_flush_at = Instant::now();
                 }
 
                 let settings = st.settings.peek();
-                let rpc_enabled = settings.discord_rpc_enabled && !settings.discord_client_id.trim().is_empty();
-                let rpc_client_id = settings.discord_client_id.clone();
+                let rpc_enabled = settings.discord_rpc_enabled;
+                // всегда встроенное приложение Discord (поле в настройках убрано)
+                let rpc_client_id = discord::DEFAULT_CLIENT_ID.to_string();
                 drop(settings);
                 if rpc_enabled {
                     discord::init(&rpc_client_id);
                     if let Some(track) = st.now.peek().clone() {
                         let playing = snap.state == PlaybackState::Playing;
                         let key = (track.id.clone(), playing);
-                        if rpc_key.as_ref() != Some(&key) || rpc_sent_at.elapsed() > Duration::from_secs(15) {
-                            discord::set_activity(&track.title, &track.artist, !playing);
+                        // перемотка: позиция ушла от ожидаемой — обновить полосу времени
+                        let expected = rpc_sent_pos + if playing { rpc_sent_at.elapsed().as_millis() as u64 } else { 0 };
+                        let jumped = snap.position_ms.abs_diff(expected) > 2_500;
+                        if rpc_key.as_ref() != Some(&key) || jumped || rpc_sent_at.elapsed() > Duration::from_secs(15) {
+                            let cover = if track.is_local() { None } else { track.artwork.as_deref().map(|u| crate::model::sc_art_size(u, crate::model::ArtSize::Large)).filter(|u| u.starts_with("https://")) };
+                            let url = track.permalink.clone().filter(|u| u.starts_with("https://soundcloud.com/"));
+                            discord::set_activity(discord::Presence {
+                                title: track.title.clone(),
+                                artist: track.artist.clone(),
+                                paused: !playing,
+                                position_ms: snap.position_ms,
+                                duration_ms: snap.duration_ms.max(track.duration_ms),
+                                cover,
+                                url,
+                            });
                             rpc_key = Some(key);
                             rpc_sent_at = Instant::now();
+                            rpc_sent_pos = snap.position_ms;
                         }
                     }
                 } else if rpc_key.is_some() {
@@ -661,6 +793,15 @@ pub fn App() -> Element {
     use_effect(move || window().set_zoom_level(zoom() as f64));
     let on_top = use_memo(move || st.settings.read().always_on_top);
     use_effect(move || window().set_always_on_top(on_top()));
+    use_hook(disable_window_transitions);
+    // первый вход в аккаунт SoundCloud: время, наслушанное без входа, переходит к нему
+    use_effect(move || {
+        let Some(urn) = st.sc_user.read().as_ref().map(|u| u.urn.clone()).filter(|u| !u.is_empty()) else { return };
+        if st.library.peek().needs_guest_adopt(&urn) {
+            let mut lib = st.library;
+            lib.write().adopt_guest_listening(&urn);
+        }
+    });
     let effect = use_memo(move || (st.settings.read().window_effect, st.theme.read().dark));
     use_effect(move || {
         let (e, dark) = effect();
@@ -668,11 +809,9 @@ pub fn App() -> Element {
     });
     let dyn_accent = use_memo(move || st.settings.read().dynamic_accent);
     use_effect(move || {
-        if !dyn_accent() {
-            let mut a = st.accent;
-            if a.peek().is_some() {
-                a.set(None);
-            }
+        if !dyn_accent() && st.accent.peek().is_some() {
+            // выключили — плавно возвращаемся к цвету темы
+            fade_accent(st, None);
         }
     });
 
@@ -731,6 +870,7 @@ pub fn App() -> Element {
             PlayerPos::Bottom => "pl-bottom",
             PlayerPos::Top => "pl-top",
             PlayerPos::Floating => "pl-float",
+            PlayerPos::FloatingTop => "pl-float pl-float-top",
         },
         if !st.theme.read().dark { "light" } else { "" },
         if !s.animations || s.low_power { "no-anim" } else { "" },
@@ -749,6 +889,7 @@ pub fn App() -> Element {
         if player_collapsed { "player-collapsed" } else { "" },
         if st.theme.read().glass.liquid { "glass-liquid" } else { "" },
         if layout.player_md3 { "md3" } else { "" },
+        if s.fisheye && s.animations && !s.low_power { "fisheye" } else { "" },
         if matches!(pstate, PlaybackState::Playing | PlaybackState::Buffering) { "is-playing" } else { "is-paused" },
     ]
     .iter()
@@ -814,9 +955,7 @@ pub fn App() -> Element {
             if intro != 0 {
                 Intro {}
             }
-            if *st.fullscreen.read() {
-                FullscreenLyrics {}
-            }
+            FullscreenHost {}
             if *st.eq_open.read() {
                 EqPanel {}
             }

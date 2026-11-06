@@ -58,7 +58,8 @@ pub fn Island() -> Element {
     let mut st = app_state();
     let track = st.now.read().clone();
     let playing = matches!(*st.pstate.read(), PlaybackState::Playing | PlaybackState::Buffering);
-    let pos = (*st.position.read() / 250) * 250;
+    let mut drag = use_signal(|| None::<u64>);
+    let pos = drag.read().unwrap_or((*st.position.read() / 250) * 250);
     let dur = *st.duration.read();
     let pct = if dur > 0 { (pos as f64 / dur as f64 * 100.0).min(100.0) } else { 0.0 };
     let art = track.as_ref().and_then(|t| t.art(ArtSize::Medium));
@@ -120,7 +121,11 @@ pub fn Island() -> Element {
                             disabled: !has_track,
                             style: "--di-p: {pct}%;",
                             oninput: move |e: FormEvent| {
-                                if let Ok(v) = e.value().parse::<u64>() { seek(st, v); }
+                                if let Ok(v) = e.value().parse::<f64>() { drag.set(Some(v as u64)); }
+                            },
+                            onchange: move |e: FormEvent| {
+                                if let Ok(v) = e.value().parse::<f64>() { seek(st, v as u64); }
+                                hold_drag(drag);
                             },
                         }
                         span { class: "time", "{fmt_time(dur)}" }
@@ -319,7 +324,7 @@ pub fn Progress() -> Element {
                         if let Ok(v) = e.value().parse::<f64>() {
                             seek(st, v as u64);
                         }
-                        drag.set(None);
+                        hold_drag(drag);
                     },
                 }
             }
@@ -503,4 +508,16 @@ pub fn EqPanel() -> Element {
             }
         }
     }
+}
+
+/// После отпускания ползунка ещё полсекунды показываем выбранную позицию:
+/// плеер успевает перемотаться, и заливка не «отпрыгивает» назад.
+fn hold_drag(mut drag: Signal<Option<u64>>) {
+    let at = *drag.peek();
+    spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        if *drag.peek() == at {
+            drag.set(None);
+        }
+    });
 }

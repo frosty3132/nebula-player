@@ -1306,6 +1306,9 @@ button.mini:hover { background: var(--hover-2); }
 
 .fs-lyrics { position: fixed; inset: 0; z-index: 80; display: flex; flex-direction: column; animation: fs-in var(--t-slow) var(--ease-out) both; background: rgba(var(--bg-rgb), .97); backdrop-filter: blur(28px); border-radius: inherit; overflow: hidden; }
 @keyframes fs-in { from { opacity: 0; transform: scale(1.04); filter: blur(10px); } }
+/* выход: обратное движение, чуть быстрее входа (длительность совпадает с FullscreenHost) */
+.app .fs-lyrics.leaving { animation: fs-out calc(320ms * var(--anim, 1)) cubic-bezier(.25, .1, .5, 1) forwards; pointer-events: none; }
+@keyframes fs-out { to { opacity: 0; transform: scale(1.04); filter: blur(10px); } }
 .fs-bg { position: absolute; inset: -80px; background-size: cover; background-position: center; filter: blur(80px) saturate(160%); opacity: .55; transform: scale(1.1); animation: fs-drift calc(40s * var(--anim, 1)) ease-in-out infinite alternate; }
 @keyframes fs-drift { to { transform: scale(1.25) rotate(4deg); } }
 .fs-veil { position: absolute; inset: 0; background: radial-gradient(80% 80% at 30% 50%, transparent, rgba(var(--bg-rgb), .65)); }
@@ -1636,3 +1639,92 @@ textarea, input { user-select: text; }
 .app.md3 .p-cover-wrap .cover { border-radius: 16px; }
 .app.md3 .di-play { border-radius: 12px; background: var(--accent); }
 .app.md3 .fs-cover .cover { border-radius: 28px; }
+
+/* визуализатор спектра (в духе cava) внутри планеты на главной */
+.cava {
+  position: absolute;
+  inset: 110px;
+  z-index: 1;
+  border-radius: 50%;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 0 16px;
+  pointer-events: none;
+}
+.cava i {
+  flex: 1;
+  max-width: 4px;
+  height: 64%;
+  border-radius: 3px;
+  /* цвет «поверх акцента»: тёмный на светлой планете, светлый на тёмной */
+  background: linear-gradient(to top, color-mix(in srgb, var(--on-accent) 45%, transparent), var(--on-accent) 50%, color-mix(in srgb, var(--on-accent) 45%, transparent));
+  box-shadow: 0 0 8px color-mix(in srgb, var(--on-accent) 30%, transparent);
+  transform: scaleY(var(--h, 0));
+  transition: transform 70ms linear;
+  will-change: transform;
+}
+.app.no-anim .cava i { transition: none; }
+
+/* «Рыбий глаз» при прокрутке: строки у верхнего и нижнего края списка
+   сжимаются, наклоняются и гаснут, как на барабане. Анимация привязана к
+   прокрутке (animation-timeline: view()) — считает браузер, без JS. */
+@supports (animation-timeline: view()) {
+  .app.fisheye .track-row {
+    animation: fish-row linear both;
+    animation-timeline: view();
+    transform-origin: 50% 50%;
+  }
+  /* у карточек transform занят наведением — сжимаем свойством scale */
+  .app.fisheye .track-card,
+  .app.fisheye .genre-card {
+    animation: fish-card linear both;
+    animation-timeline: view();
+  }
+}
+@keyframes fish-row {
+  0% { transform: perspective(900px) rotateX(-26deg) scale(.88); opacity: .3; animation-timing-function: cubic-bezier(.3, .6, .4, 1); }
+  30%, 70% { transform: perspective(900px) rotateX(0deg) scale(1); opacity: 1; animation-timing-function: cubic-bezier(.6, 0, .7, .4); }
+  100% { transform: perspective(900px) rotateX(26deg) scale(.88); opacity: .3; }
+}
+@keyframes fish-card {
+  0% { scale: .88; opacity: .35; animation-timing-function: cubic-bezier(.3, .6, .4, 1); }
+  30%, 70% { scale: 1; opacity: 1; animation-timing-function: cubic-bezier(.6, 0, .7, .4); }
+  100% { scale: .88; opacity: .35; }
+}
+
+/* Ползунки ведёт JS (pointer-события на полосе): скрытый input не перехватывает
+   мышь, а во время перетаскивания заливка стоит ровно под курсором, без перехода. */
+.pr-input, .vol-input { pointer-events: none; }
+.progress, .vol-track { touch-action: none; cursor: pointer; }
+.progress.dragging .pr-fill, .vol-track.dragging .vol-fill { width: var(--drag-w) !important; transition: none !important; }
+.progress.dragging .pr-fill::after { transform: translateY(-50%) scale(1.15); }
+.app.md3 .progress.dragging .pr-fill::after { transform: translateY(-50%) scaleY(1.3); }
+
+/* Парящий плеер сверху: висит под верхней панелью, список уезжает под него */
+.app { --tb-h: 46px; }
+.app.sb-top { --tb-h: 82px; }
+.app.pl-float-top .player {
+  bottom: auto;
+  top: calc(var(--tb-h) + 4px);
+  left: calc(var(--col-l, 0px) + var(--col-w, 100%) / 2);
+  width: min(1100px, calc(var(--col-w, 100%) - 24px));
+  animation-name: player-in-top;
+}
+/* боковые панели тянутся до самого верха — отступ под плеер только у страницы,
+   и она прокручивается под стеклом плеера */
+.app.pl-float-top .body { padding-bottom: 12px; }
+.app.pl-float-top .page-wrap { padding-top: calc(var(--player-h) + 22px); }
+.app.pl-float-top.player-collapsed .page-wrap { padding-top: 6px; }
+.app.pl-float-top .eq-panel { bottom: auto; top: calc(var(--tb-h) + var(--player-h) + 20px); }
+.app.pl-float-top .toasts { bottom: 24px; }
+/* узкая средняя колонка: правая группа кнопок берёт ширину по содержимому,
+   а название и полоса перемотки ужимаются — ничего не наезжает друг на друга */
+.app.pl-float-top[data-col="narrow"] .player,
+.app.pl-float-top[data-col="tight"] .player { grid-template-columns: minmax(0, 1fr) minmax(200px, 1.3fr) auto; gap: 12px; padding: 0 14px; }
+.app.pl-float-top[data-col="narrow"] .vol-track,
+.app.pl-float-top[data-col="tight"] .vol-track { width: 70px; }
+.app.pl-float-top[data-col="tight"] .vol-pct,
+.app.pl-float-top[data-col="tight"] .p-left .icon-btn { display: none; }
