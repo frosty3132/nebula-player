@@ -530,16 +530,25 @@ pub fn load_accent(state: AppState, track: &Track) {
 // ─────────────────────────────── предзагрузка и сессия ───────────────────────────────
 
 pub fn maybe_preload(state: AppState) {
-    if !state.settings.peek().preload_next {
+    let (preload_next, crossfade, repeat) = {
+        let s = state.settings.peek();
+        (s.preload_next, s.crossfade_s > 0.0, s.repeat)
+    };
+    // плавному переходу нужен заранее известный следующий трек
+    if !preload_next && !crossfade {
         return;
     }
     let (pos, dur) = (*state.position.peek(), *state.duration.peek());
     if dur == 0 || dur.saturating_sub(pos) > 25_000 {
         return;
     }
+    // «повтор трека» — следующим будет этот же трек, переход не нужен
+    if repeat == RepeatMode::One {
+        return;
+    }
     let next = {
         let q = state.queue.peek();
-        q.index.and_then(|i| q.tracks.get(i + 1)).cloned()
+        q.index.and_then(|i| q.tracks.get(i + 1).or(if repeat == RepeatMode::All && i + 1 == q.tracks.len() { q.tracks.first() } else { None })).cloned()
     };
     let Some(next) = next else { return };
     if state.preloaded.peek().track_id == next.id {
@@ -547,6 +556,11 @@ pub fn maybe_preload(state: AppState) {
     }
     let mut pre = state.preloaded;
     pre.set(Preloaded { track_id: next.id.clone(), spec: None, preview: false, at: None });
+    // локальный файл готовить не нужно — движку достаточно знать путь
+    if let Some(path) = next.path.clone() {
+        svc().player.preload(MediaSpec::File(path.into()));
+        return;
+    }
     spawn_forever(async move {
         if !next.is_local() && svc().sc.configured() {
             let quality = state.settings.peek().quality;

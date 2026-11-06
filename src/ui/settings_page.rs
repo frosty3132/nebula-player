@@ -166,6 +166,9 @@ fn PlaybackTab() -> Element {
     let s = st.settings.read().clone();
     rsx! {
         Card { title: "Воспроизведение", icon: "play",
+            Row { label: "Плавный переход между треками", hint: "Как кроссфейд в Spotify: конец трека перетекает в начало следующего. 0 — выключено",
+                Slider { value: s.crossfade_s, min: 0.0, max: 12.0, step: 1.0, unit: " с", oninput: move |v: f32| upd(st, |s| s.crossfade_s = v) }
+            }
             Row { label: "Похожие треки после очереди", hint: "Радио по мотивам последнего трека SoundCloud", Toggle { value: s.autoplay_related, onchange: move |v| upd(st, |s| s.autoplay_related = v) } }
             Row { label: "Предзагрузка следующего трека", hint: "Поток, обложка и текст готовятся за 25 секунд до конца", Toggle { value: s.preload_next, onchange: move |v| upd(st, |s| s.preload_next = v) } }
             Row { label: "Запоминать очередь и позицию", Toggle { value: s.remember_session, onchange: move |v| upd(st, |s| s.remember_session = v) } }

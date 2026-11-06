@@ -67,11 +67,13 @@ pub struct Glass {
     /// Непрозрачность фона окна: < 1 — сквозь окно виден рабочий стол.
     pub window_opacity: f32,
     pub glow: f32,
+    /// «Жидкое стекло» как в iOS: молочная подложка, световой край, глубокая тень.
+    pub liquid: bool,
 }
 
 impl Default for Glass {
     fn default() -> Self {
-        Self { blur: 22.0, opacity: 0.55, saturation: 150.0, window_opacity: 0.93, glow: 0.55 }
+        Self { blur: 22.0, opacity: 0.55, saturation: 150.0, window_opacity: 0.93, glow: 0.55, liquid: false }
     }
 }
 
@@ -300,6 +302,8 @@ pub struct Layout {
     pub home: Vec<Entry>,
     pub show_logo: bool,
     pub titlebar_title: bool,
+    /// Плеер в стиле Material 3: волнистая полоса прогресса, кнопка-«сквиркл», тональные кнопки.
+    pub player_md3: bool,
 }
 
 impl Default for Layout {
@@ -322,6 +326,7 @@ impl Default for Layout {
             home: entries(&HOME_SECTIONS.iter().map(|n| n.0).collect::<Vec<_>>()),
             show_logo: true,
             titlebar_title: true,
+            player_md3: false,
         }
     }
 }
@@ -702,11 +707,52 @@ pub fn builtin_themes() -> Vec<Theme> {
                 border: "rgba(255,255,255,0.08)".into(),
             };
             t.shape = Shape { radius: 14.0, radius_small: 10.0, radius_large: 20.0, border_width: 1.0, cover_radius: 8.0, button_radius: 999.0 };
-            t.glass = Glass { blur: 0.0, opacity: 0.94, saturation: 100.0, window_opacity: 1.0, glow: 0.0 };
+            t.glass = Glass { blur: 0.0, opacity: 0.94, saturation: 100.0, window_opacity: 1.0, glow: 0.0, liquid: false };
             t.background = Background { kind: BgKind::Solid, nebula: false, dim: 0.0, ..Background::default() };
             t.stars = Stars { density: 0.0, twinkle: false, shooting: false, ..Stars::default() };
         }),
         theme("galaxy", "Галактика", |_| {}),
+        // «жидкое стекло» как в iOS: молочные полупрозрачные панели со световым
+        // краем поверх яркой туманности (рецепт — Liquid Glass Studio, MIT)
+        theme("liquid", "Жидкое стекло", |t| {
+            t.colors = Colors {
+                bg: "#0a0c1c".into(),
+                surface: "#ffffff".into(),
+                surface2: "#e8ecff".into(),
+                text: "#ffffff".into(),
+                muted: "#c9cde6".into(),
+                accent: "#7dd3fc".into(),
+                accent2: "#c4b5fd".into(),
+                glow: "#93c5fd".into(),
+                danger: "#fb7185".into(),
+                border: "rgba(255,255,255,0.28)".into(),
+            };
+            t.shape = Shape { radius: 26.0, radius_small: 16.0, radius_large: 32.0, border_width: 1.0, cover_radius: 14.0, button_radius: 999.0 };
+            t.glass = Glass { blur: 24.0, opacity: 0.12, saturation: 180.0, window_opacity: 0.96, glow: 0.35, liquid: true };
+            t.background.nebula = true;
+            t.background.nebula_intensity = 1.0;
+        }),
+        // Material 3 (Material You): тональные поверхности, плеер с волнистым прогрессом
+        theme("material", "Material 3", |t| {
+            t.colors = Colors {
+                bg: "#141218".into(),
+                surface: "#211f26".into(),
+                surface2: "#2b2930".into(),
+                text: "#e6e0e9".into(),
+                muted: "#cac4d0".into(),
+                accent: "#d0bcff".into(),
+                accent2: "#ccc2dc".into(),
+                glow: "#d0bcff".into(),
+                danger: "#f2b8b5".into(),
+                border: "rgba(202,196,208,0.12)".into(),
+            };
+            t.shape = Shape { radius: 24.0, radius_small: 16.0, radius_large: 28.0, border_width: 0.0, cover_radius: 20.0, button_radius: 999.0 };
+            t.glass = Glass { blur: 0.0, opacity: 0.96, saturation: 100.0, window_opacity: 1.0, glow: 0.0, liquid: false };
+            t.background = Background { kind: BgKind::Solid, nebula: false, dim: 0.0, ..Background::default() };
+            t.stars = Stars { density: 0.0, twinkle: false, shooting: false, ..Stars::default() };
+            t.layout.player_md3 = true;
+            t.layout.cover_shape = CoverShape::Rounded;
+        }),
         theme("orion", "Туманность Ориона", |t| {
             t.colors = Colors {
                 bg: "#0b0410".into(),
@@ -756,27 +802,6 @@ pub fn builtin_themes() -> Vec<Theme> {
             t.layout.cover_shape = CoverShape::Vinyl;
             t.stars.speed = 1.8;
         }),
-        theme("void", "Чёрная дыра", |t| {
-            t.colors = Colors {
-                bg: "#000000".into(),
-                surface: "#0c0c0e".into(),
-                surface2: "#17171a".into(),
-                text: "#f4f4f5".into(),
-                muted: "#8b8b92".into(),
-                accent: "#ffffff".into(),
-                accent2: "#a1a1aa".into(),
-                glow: "#ffffff".into(),
-                danger: "#f87171".into(),
-                border: "rgba(255,255,255,0.07)".into(),
-            };
-            t.shape = Shape { radius: 6.0, radius_small: 4.0, radius_large: 8.0, border_width: 1.0, cover_radius: 4.0, button_radius: 6.0 };
-            t.background.nebula = false;
-            t.stars.density = 0.45;
-            t.stars.shooting = false;
-            t.glass.glow = 0.15;
-            t.layout.cover_shape = CoverShape::Square;
-            t.layout.density = Density::Compact;
-        }),
         theme("synthwave", "Синтвейв", |t| {
             t.colors = Colors {
                 bg: "#0d0221".into(),
@@ -796,7 +821,7 @@ pub fn builtin_themes() -> Vec<Theme> {
         }),
         theme("glass", "Чистое стекло", |t| {
             t.colors.bg = "#0a0a14".into();
-            t.glass = Glass { blur: 30.0, opacity: 0.38, saturation: 180.0, window_opacity: 0.55, glow: 0.4 };
+            t.glass = Glass { blur: 30.0, opacity: 0.38, saturation: 180.0, window_opacity: 0.55, glow: 0.4, liquid: false };
             t.background.nebula_intensity = 0.45;
             t.stars.density = 0.5;
         }),
