@@ -8,19 +8,11 @@ use super::state::*;
 use super::widgets::IconBtn;
 use crate::theme::{Entry, SidebarPos, NAV_ITEMS};
 use dioxus::desktop::tao::window::ResizeDirection;
-use dioxus::core::spawn_forever;
 use dioxus::desktop::window;
 use dioxus::prelude::*;
-use std::time::Duration;
 
-/// Сколько ждать анимацию закрытия/сворачивания (`.app.closing` в style.css,
-/// 380 мс × скорость анимаций) или `None`, если анимации выключены.
-fn close_anim_ms(state: AppState) -> Option<u64> {
-    let s = state.settings.peek();
-    (s.open_close_anim && s.animations && !s.low_power).then(|| (380.0 * s.anim_speed.clamp(0.05, 3.0)) as u64 + 30)
-}
-
-/// Сохранить размер/положение окна и состояние, затем закрыть с анимацией.
+/// Сохранить размер/положение окна и состояние, затем закрыть — сразу, без
+/// анимации ухода.
 pub fn close_app(state: AppState) {
     let mut st = state;
     {
@@ -41,21 +33,14 @@ pub fn close_app(state: AppState) {
     st.settings.peek().save();
     st.library.peek().save();
     save_session(state);
-    if let Some(ms) = close_anim_ms(state) {
-        st.closing.set(true);
-        spawn_forever(async move {
-            tokio::time::sleep(Duration::from_millis(ms)).await;
-            window().close();
-        });
-    } else {
-        window().close();
-    }
+    window().close();
 }
 
-/// Системные анимации окна (появление, закрытие, сворачивание) Windows
-/// включены — их выключаем только на время развёртывания: там Windows
-/// растягивает снимок прозрачного окна, и оно вспыхивает белым.
-fn set_window_transitions(enabled: bool) {
+/// Системные анимации окна Windows. Обычно выключены: при развёртывании
+/// Windows растягивает снимок прозрачного окна, и оно вспыхивает белым. На
+/// время сворачивания и возвращения из панели задач их включаем — окно
+/// сворачивается и разворачивается как у обычных приложений.
+pub fn set_window_transitions(enabled: bool) {
     #[cfg(windows)]
     {
         use dioxus::desktop::tao::platform::windows::WindowExtWindows;
@@ -75,6 +60,7 @@ fn set_window_transitions(enabled: bool) {
 /// окна. Углы у Nebula круглее системных, и из-за них выглядывала белая рамка;
 /// окно прозрачное, скругление рисует сама страница.
 pub fn style_window_frame() {
+    set_window_transitions(false);
     #[cfg(windows)]
     {
         use dioxus::desktop::tao::platform::windows::WindowExtWindows;
@@ -93,29 +79,17 @@ pub fn style_window_frame() {
     }
 }
 
-/// Развернуть/восстановить окно без белой вспышки.
+/// Развернуть/восстановить окно (системная анимация выключена — без вспышки).
 pub fn toggle_maximized_quiet() {
-    set_window_transitions(false);
     window().toggle_maximized();
-    spawn_forever(async move {
-        tokio::time::sleep(Duration::from_millis(600)).await;
-        set_window_transitions(true);
-    });
 }
 
-pub fn minimize_app(state: AppState) {
-    let mut st = state;
-    if let Some(ms) = close_anim_ms(state) {
-        st.closing.set(true);
-        spawn_forever(async move {
-            tokio::time::sleep(Duration::from_millis(ms)).await;
-            window().set_minimized(true);
-            st.closing.set(false);
-            st.reopening.set(true);
-        });
-    } else {
-        window().set_minimized(true);
-    }
+/// Свернуть с системной анимацией Windows, как обычное приложение. Она остаётся
+/// включённой до возвращения окна (см. «__visible» в mod.rs), чтобы и
+/// разворачивание из панели задач было системным.
+pub fn minimize_app(_state: AppState) {
+    set_window_transitions(true);
+    window().set_minimized(true);
 }
 
 #[component]

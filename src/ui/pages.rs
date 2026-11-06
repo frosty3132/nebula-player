@@ -666,6 +666,9 @@ pub fn Search() -> Element {
                     id: "search-input",
                     class: "search-input",
                     autofocus: true,
+                    // без всплывающих «Сохранённых сведений» браузера — своя история есть ниже
+                    autocomplete: "off",
+                    spellcheck: false,
                     placeholder: "Что будем слушать?",
                     value: "{q_now}",
                     oninput: move |e: FormEvent| query.set(e.value()),

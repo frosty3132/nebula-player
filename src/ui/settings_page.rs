@@ -229,7 +229,7 @@ fn InterfaceTab() -> Element {
                 Seg { value: format!("{:?}", s.window_effect), options: opts(&[("None", "Нет"), ("Mica", "Mica"), ("Acrylic", "Acrylic"), ("Blur", "Blur")]),
                     onchange: move |v: String| upd(st, |s| s.window_effect = match v.as_str() { "Mica" => WindowEffect::Mica, "Acrylic" => WindowEffect::Acrylic, "Blur" => WindowEffect::Blur, _ => WindowEffect::None }) }
             }
-            Row { label: "Масштаб интерфейса", Slider { value: s.ui_scale * 100.0, min: 70.0, max: 160.0, step: 5.0, unit: "%", oninput: move |v: f32| upd(st, |s| s.ui_scale = v / 100.0) } }
+            Row { label: "Масштаб интерфейса", hint: "Применяется, когда отпускаешь ползунок", Slider { value: s.ui_scale * 100.0, min: 70.0, max: 160.0, step: 5.0, unit: "%", commit_on_release: true, oninput: move |v: f32| upd(st, |s| s.ui_scale = v / 100.0) } }
             Row { label: "Поверх всех окон", Toggle { value: s.always_on_top, onchange: move |v| upd(st, |s| s.always_on_top = v) } }
         }
         Card { title: "Анимации и производительность", icon: "sparkles",
@@ -237,7 +237,6 @@ fn InterfaceTab() -> Element {
             Row { label: "Скорость анимаций", hint: "Меньше — быстрее",
                 Slider { value: s.anim_speed, min: 0.25, max: 2.5, step: 0.05, decimals: 2, unit: "×", oninput: move |v: f32| upd(st, |s| s.anim_speed = v) }
             }
-            Row { label: "Анимация открытия и закрытия окна", Toggle { value: s.open_close_anim, onchange: move |v| upd(st, |s| s.open_close_anim = v) } }
             Row { label: "Заставка при запуске", hint: "Логотип, затем интерфейс плавно собирается по частям. Пропустить — клик или любая клавиша",
                 Toggle { value: s.intro_anim, onchange: move |v| upd(st, |s| s.intro_anim = v) }
             }

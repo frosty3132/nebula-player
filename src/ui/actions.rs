@@ -376,6 +376,20 @@ pub fn set_volume(state: AppState, v: f32) {
     }
 }
 
+/// Открыть или закрыть панель текста рукой пользователя: закрытие запоминается,
+/// чтобы автооткрытие на следующем треке не возвращало панель.
+pub fn set_lyrics_open(state: AppState, open: bool) {
+    let mut s = state.settings;
+    let mut w = s.write();
+    w.lyrics_open = open;
+    w.lyrics_dismissed = !open;
+}
+
+pub fn toggle_lyrics(state: AppState) {
+    let open = !state.settings.peek().lyrics_open;
+    set_lyrics_open(state, open);
+}
+
 pub fn toggle_mute(state: AppState) {
     let mut s = state.settings;
     let m = s.peek().muted;
@@ -499,7 +513,8 @@ pub fn load_lyrics(state: AppState, track: &Track) {
             None => LyricsState::Failed("внутренняя ошибка".into()),
         });
         let mut s = state.settings;
-        if found && s.peek().lyrics_auto_open && !s.peek().lyrics_open {
+        // закрытую вручную панель не открываем — до тех пор, пока её не откроют сами
+        if found && s.peek().lyrics_auto_open && !s.peek().lyrics_open && !s.peek().lyrics_dismissed {
             s.write().lyrics_open = true;
         }
     });
