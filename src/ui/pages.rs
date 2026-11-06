@@ -195,7 +195,6 @@ fn Hero() -> Element {
         section { class: "hero glass", "data-el": "hero",
             div { class: "hero-orbit", span {} span {} span {} }
             div { class: "hero-text",
-                div { class: "ph-kicker", "✦ Nebula" }
                 h1 { class: "hero-title", "{greeting}, {name}" }
                 p { class: "hero-sub", "Музыка из SoundCloud и с вашего компьютера, синхронные тексты из LRCLIB и интерфейс, который меняется как вам угодно." }
                 ListeningStats { class: "in-hero" }

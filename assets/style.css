@@ -321,8 +321,8 @@ video.bg-media { width: calc(100% + var(--bg-blur) * 4); height: calc(100% + var
 .app.sb-top .tb-right { align-items: flex-start; padding-top: 6px; }
 .app.sb-top .tb-center { flex-direction: column; justify-content: flex-end; align-items: center; gap: 4px; padding-bottom: 6px; }
 .tb-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.tb-brand.above { margin: 0; gap: 7px; font-size: 13px; opacity: .92; }
-.tb-brand.above .tb-logo { width: 18px; height: 18px; }
+.tb-brand.above { margin: 0; font-size: 15.5px; opacity: .95; }
+.tb-brand.above .tb-name { letter-spacing: .08em; }
 .app.intro-reveal .tb-brand.above { animation: rv-drop calc(640ms * var(--anim, 1)) var(--ease-out) calc(60ms * var(--anim, 1)) backwards; }
 .app.sb-top .edit-hint { top: 92px; }
 .app.sb-top .tb-left, .app.sb-top .tb-right { flex: 1; min-width: 0; }

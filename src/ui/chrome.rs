@@ -111,7 +111,6 @@ pub fn TitleBar() -> Element {
             div { class: "tb-center",
                 if top_dock {
                     div { class: "tb-brand above",
-                        span { class: "tb-logo", dangerous_inner_html: LOGO_SVG }
                         span { class: "tb-name", "Nebula" }
                     }
                 }
