@@ -60,7 +60,10 @@ pub struct LibraryData {
     pub history: Vec<Track>,
     pub playlists: Vec<LocalPlaylist>,
     pub recent_searches: Vec<String>,
+    /// Статистика без входа в SoundCloud («гость»).
     pub listening: ListeningStats,
+    /// Статистика по аккаунтам SoundCloud (ключ — urn пользователя).
+    pub listening_accounts: HashMap<String, ListeningStats>,
 }
 
 const HISTORY_MAX: usize = 300;
@@ -114,8 +117,33 @@ impl LibraryData {
         self.history.truncate(HISTORY_MAX);
     }
 
-    pub fn record_listening(&mut self, t: &Track, delta_ms: u64) {
-        self.listening.record(t, delta_ms);
+    /// Засчитать время: на аккаунт SoundCloud, если вошли, иначе — гостю.
+    pub fn record_listening(&mut self, t: &Track, delta_ms: u64, account: Option<&str>) {
+        match account {
+            Some(a) => self.listening_accounts.entry(a.to_string()).or_default().record(t, delta_ms),
+            None => self.listening.record(t, delta_ms),
+        }
+    }
+
+    /// Статистика текущего аккаунта (или гостевая без входа).
+    pub fn listening_for(&self, account: Option<&str>) -> ListeningStats {
+        match account {
+            Some(a) => self.listening_accounts.get(a).cloned().unwrap_or_default(),
+            None => self.listening.clone(),
+        }
+    }
+
+    /// Первый вход в аккаунт: накопленное без входа переносится на него,
+    /// чтобы прослушанное до привязки не пропало.
+    pub fn needs_guest_adopt(&self, account: &str) -> bool {
+        !self.listening_accounts.contains_key(account) && self.listening.total_with_imported() > 0
+    }
+
+    pub fn adopt_guest_listening(&mut self, account: &str) {
+        if self.needs_guest_adopt(account) {
+            let guest = std::mem::take(&mut self.listening);
+            self.listening_accounts.insert(account.to_string(), guest);
+        }
     }
 
     pub fn push_search(&mut self, q: &str) {
@@ -302,8 +330,8 @@ mod tests {
     fn listening_stats_accumulate_per_track() {
         let mut lib = LibraryData::default();
         let t = Track { id: "sc:1".into(), ..Default::default() };
-        lib.record_listening(&t, 1_500);
-        lib.record_listening(&t, 500);
+        lib.record_listening(&t, 1_500, None);
+        lib.record_listening(&t, 500, None);
         assert_eq!(lib.listening.total_ms, 2_000);
         assert_eq!(lib.listening.by_track_ms.get("sc:1"), Some(&2_000));
     }

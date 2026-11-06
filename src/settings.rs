@@ -132,6 +132,10 @@ pub struct Settings {
     pub low_power: bool,
     pub dynamic_accent: bool,
     pub beat_glow: bool,
+    /// Визуализатор спектра (как cava) в планете на главной.
+    pub visualizer: bool,
+    /// «Рыбий глаз»: строки у верхнего и нижнего края списка сжимаются и наклоняются.
+    pub fisheye: bool,
     pub discord_rpc_enabled: bool,
     pub discord_client_id: String,
     pub show_track_numbers: bool,
@@ -201,7 +205,9 @@ impl Default for Settings {
             low_power: false,
             dynamic_accent: false,
             beat_glow: true,
-            discord_rpc_enabled: false,
+            visualizer: true,
+            fisheye: true,
+            discord_rpc_enabled: true,
             discord_client_id: String::new(),
             show_track_numbers: true,
             confirm_clear_queue: false,

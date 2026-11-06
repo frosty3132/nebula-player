@@ -6,6 +6,7 @@ use super::decode::{self, DecodeCtx, SessionCtl, SourceHandle};
 use super::dsp::{DspControl, DspParams};
 use super::output::{self, Output};
 use super::source::{HlsBuffer, ProgBuffer};
+use super::spectrum::{Spectrum, BANDS};
 pub use super::output::OutputDevice;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use parking_lot::Mutex;
@@ -88,6 +89,7 @@ struct Shared {
     snapshot: Mutex<Snapshot>,
     dsp: Arc<DspControl>,
     level: Arc<AtomicU32>,
+    spectrum: Arc<Spectrum>,
     read_ahead_ms: AtomicU64,
     /// Длительность плавного перехода между треками (0 — без перехода).
     crossfade_ms: AtomicU64,
@@ -107,6 +109,7 @@ impl Player {
             snapshot: Mutex::new(Snapshot::default()),
             dsp: Arc::new(DspControl::new(dsp)),
             level: Arc::new(AtomicU32::new(0)),
+            spectrum: Arc::new(Spectrum::default()),
             read_ahead_ms: AtomicU64::new(240_000),
             crossfade_ms: AtomicU64::new(0),
         });
@@ -151,6 +154,14 @@ impl Player {
     }
     pub fn snapshot(&self) -> Snapshot {
         self.shared.snapshot.lock().clone()
+    }
+    /// Включить анализатор спектра (пока визуализатор виден на экране).
+    pub fn set_visualizer(&self, on: bool) {
+        self.shared.spectrum.enabled.store(on, Ordering::Relaxed);
+    }
+    /// Полосы спектра 0..1, от низких частот к высоким.
+    pub fn spectrum(&self) -> [f32; BANDS] {
+        self.shared.spectrum.read()
     }
     /// Уровень низких частот на выходе, 0..~1 (для визуальной пульсации).
     pub fn level(&self) -> f32 {
@@ -246,7 +257,7 @@ impl Controller {
             return false;
         }
         self.last_open_attempt = Instant::now();
-        match output::open(self.device_pref.as_deref(), self.shared.dsp.clone(), self.shared.level.clone()) {
+        match output::open(self.device_pref.as_deref(), self.shared.dsp.clone(), self.shared.level.clone(), self.shared.spectrum.clone()) {
             Ok(o) => {
                 let _ = self.events.send(PlayerEvent::DeviceChanged(o.device_name.clone()));
                 self.shared.snapshot.lock().device = o.device_name.clone();

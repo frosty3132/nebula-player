@@ -10,7 +10,9 @@ mod output;
 mod player;
 mod resample;
 mod source;
+mod spectrum;
 mod ts;
 
 pub use dsp::{DspParams, EQ_FREQS};
 pub use player::{MediaSpec, PlaybackState, Player, PlayerEvent};
+pub use spectrum::BANDS as SPECTRUM_BANDS;

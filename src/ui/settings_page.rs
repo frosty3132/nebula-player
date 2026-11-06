@@ -248,11 +248,16 @@ fn InterfaceTab() -> Element {
                 if let Some(t) = st.now.peek().clone() { load_accent(st, &t); }
             } } }
             Row { label: "Пульсация обложки в такт басу", Toggle { value: s.beat_glow, onchange: move |v| upd(st, |s| s.beat_glow = v) } }
+            Row { label: "Эффект «рыбий глаз» при прокрутке", hint: "Треки и карточки у верхнего и нижнего края списка сжимаются и наклоняются, как в барабане",
+                Toggle { value: s.fisheye, onchange: move |v| upd(st, |s| s.fisheye = v) }
+            }
+            Row { label: "Визуализатор на главной", hint: "Спектр как в cava внутри планеты; считается, только пока он на экране",
+                Toggle { value: s.visualizer, onchange: move |v| upd(st, |s| s.visualizer = v) }
+            }
         }
         Card { title: "Discord Rich Presence", icon: "cloud",
-            p { class: "set-text", "Показывает текущий трек, исполнителя и состояние плеера в Discord. Нужен Application ID приложения Discord Developer Portal; если поле пустое, RPC выключен." }
+            p { class: "set-text", "Статус «Слушает» в Discord: название и исполнитель, обложка трека, полоса времени с текущей секундой и кнопка «Открыть в SoundCloud». Работает через встроенное приложение Nebula — ничего настраивать не нужно." }
             Row { label: "Включить Discord RPC", Toggle { value: s.discord_rpc_enabled, onchange: move |v| upd(st, |s| s.discord_rpc_enabled = v) } }
-            Row { label: "Application ID", TextInput { value: s.discord_client_id.clone(), placeholder: "например, 123456789012345678", onchange: move |v| upd(st, |s| s.discord_client_id = v) } }
         }
     }
 }

@@ -222,8 +222,49 @@ pub fn LyricsPanel() -> Element {
     }
 }
 
+/// Полноэкранный текст с анимацией и входа, и выхода: после закрытия слой ещё
+/// доигрывает уход (класс `leaving`) и только потом убирается из дерева.
 #[component]
-pub fn FullscreenLyrics() -> Element {
+pub fn FullscreenHost() -> Element {
+    let st = app_state();
+    let mut shown = use_signal(|| *st.fullscreen.peek());
+    let mut leaving = use_signal(|| false);
+    use_effect(move || {
+        let open = *st.fullscreen.read();
+        if open {
+            leaving.set(false);
+            shown.set(true);
+            return;
+        }
+        if !*shown.peek() {
+            return;
+        }
+        let (anim, k) = {
+            let s = st.settings.peek();
+            (s.animations && !s.low_power, s.anim_speed.clamp(0.05, 3.0))
+        };
+        if !anim {
+            shown.set(false);
+            return;
+        }
+        leaving.set(true);
+        spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis((320.0 * k) as u64)).await;
+            // за это время текст могли открыть снова
+            if !*st.fullscreen.peek() {
+                shown.set(false);
+                leaving.set(false);
+            }
+        });
+    });
+    if !*shown.read() {
+        return rsx! {};
+    }
+    rsx! { FullscreenLyrics { leaving: *leaving.read() } }
+}
+
+#[component]
+pub fn FullscreenLyrics(leaving: bool) -> Element {
     let st = app_state();
     let now = st.now.read().clone();
     let art = now.as_ref().and_then(|t| t.art(ArtSize::Large));
@@ -231,7 +272,7 @@ pub fn FullscreenLyrics() -> Element {
     let lv = if st.settings.read().beat_glow { (*st.level.read() * 3.2).min(1.0) } else { 0.0 };
     let mut win_fs = use_signal(|| false);
     rsx! {
-        div { class: "fs-lyrics", "data-el": "lyrics_full",
+        div { class: if leaving { "fs-lyrics leaving" } else { "fs-lyrics" }, "data-el": "lyrics_full",
             if let Some(a) = art.clone() {
                 div { class: "fs-bg", style: "background-image: url('{a}');" }
             }
