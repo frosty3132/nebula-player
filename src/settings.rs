@@ -123,7 +123,6 @@ pub struct Settings {
     pub ui_scale: f32,
     pub animations: bool,
     pub anim_speed: f32,
-    pub open_close_anim: bool,
     /// Заставка при запуске: логотип и каскадное появление интерфейса.
     pub intro_anim: bool,
     pub window_effect: WindowEffect,
@@ -148,6 +147,9 @@ pub struct Settings {
     pub music_folders: Vec<String>,
     // ─── состояние панелей ───
     pub lyrics_open: bool,
+    /// Панель текста закрыта вручную: автооткрытие её не возвращает, пока
+    /// пользователь сам не откроет панель снова.
+    pub lyrics_dismissed: bool,
     pub queue_open: bool,
     /// Нижний плеер свёрнут в островок в заголовке окна.
     pub player_collapsed: bool,
@@ -197,7 +199,6 @@ impl Default for Settings {
             ui_scale: 1.0,
             animations: true,
             anim_speed: 1.0,
-            open_close_anim: true,
             intro_anim: true,
             window_effect: WindowEffect::None,
             always_on_top: false,
@@ -216,6 +217,7 @@ impl Default for Settings {
             api_cache_min: 30,
             music_folders: default_music_folder(),
             lyrics_open: true,
+            lyrics_dismissed: false,
             queue_open: false,
             player_collapsed: false,
             sidebar_collapsed: false,

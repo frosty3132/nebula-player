@@ -189,8 +189,50 @@ fn OffsetControls() -> Element {
     }
 }
 
+/// Боковая панель текста с анимацией и появления, и закрытия: после закрытия
+/// панель ещё доигрывает уход (класс `leaving`) и только потом убирается.
 #[component]
-pub fn LyricsPanel() -> Element {
+pub fn LyricsHost(open: bool, left: bool) -> Element {
+    let st = app_state();
+    let mut shown = use_signal(|| open);
+    let mut leaving = use_signal(|| false);
+    // последнее желаемое состояние — для проверки после задержки ухода
+    let mut want = use_signal(|| open);
+    use_effect(use_reactive!(|open| {
+        want.set(open);
+        if open {
+            leaving.set(false);
+            shown.set(true);
+            return;
+        }
+        if !*shown.peek() {
+            return;
+        }
+        let (anim, k) = {
+            let s = st.settings.peek();
+            (s.animations && !s.low_power, s.anim_speed.clamp(0.05, 3.0))
+        };
+        if !anim {
+            shown.set(false);
+            return;
+        }
+        leaving.set(true);
+        spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis((300.0 * k) as u64 + 20)).await;
+            if !*want.peek() {
+                shown.set(false);
+                leaving.set(false);
+            }
+        });
+    }));
+    if !*shown.read() {
+        return rsx! {};
+    }
+    rsx! { LyricsPanel { leaving: *leaving.read(), left } }
+}
+
+#[component]
+pub fn LyricsPanel(#[props(default)] leaving: bool, #[props(default)] left: bool) -> Element {
     let st = app_state();
     let found = matches!(&*st.lyrics.read(), LyricsState::Found(_));
     let source = match &*st.lyrics.read() {
@@ -199,7 +241,7 @@ pub fn LyricsPanel() -> Element {
         _ => "",
     };
     rsx! {
-        aside { class: "lyrics glass", "data-el": "lyrics",
+        aside { class: if leaving { if left { "lyrics glass leaving left" } else { "lyrics glass leaving" } } else if left { "lyrics glass left" } else { "lyrics glass" }, "data-el": "lyrics",
             div { class: "ly-head",
                 div { class: "ly-title",
                     Icon { name: "lyrics", size: 18 }
@@ -208,7 +250,7 @@ pub fn LyricsPanel() -> Element {
                 div { class: "flex1" }
                 IconBtn { icon: "search", size: 17, title: "Найти текст вручную", onclick: move |_| { let mut m = st.modal; m.set(Some(Modal::LyricsSearch)); } }
                 IconBtn { icon: "fullscreen", size: 17, title: "На весь экран (F)", onclick: move |_| { let mut f = st.fullscreen; f.set(true); } }
-                IconBtn { icon: "close", size: 17, title: "Скрыть (L)", onclick: move |_| { let mut s = st.settings; s.write().lyrics_open = false; } }
+                IconBtn { icon: "close", size: 17, title: "Скрыть (L)", onclick: move |_| crate::ui::actions::set_lyrics_open(st, false) }
             }
             if found {
                 div { class: "ly-sub",

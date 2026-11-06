@@ -30,7 +30,7 @@ use background::Background;
 use chrome::{style_window_frame, ResizeHandles, Sidebar, TitleBar};
 use dioxus::desktop::{use_asset_handler, use_global_shortcut, use_wry_event_handler, window, HotKeyState};
 use dioxus::prelude::*;
-use lyrics_view::{FullscreenHost, LyricsPanel};
+use lyrics_view::{FullscreenHost, LyricsHost};
 use overlays::{ContextMenu, EditHint, ModalHost, QueuePanel, Toasts};
 use pages::*;
 use player_bar::{EqPanel, PlayerBar};
@@ -283,6 +283,14 @@ const syncCol = () => {
 addEventListener("resize", syncCol);
 setInterval(syncCol, 1000);
 syncCol();
+// Автозаполнение WebView2 («Сохранённые сведения») во всех текстовых полях
+// приложения не нужно: выключаем его полю при первом фокусе.
+document.addEventListener("focusin", (e) => {
+  const el = e.target;
+  if ((el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) && !el.hasAttribute("autocomplete")) {
+    el.setAttribute("autocomplete", "off");
+  }
+}, true);
 await new Promise(() => {});
 "#;
 
@@ -320,11 +328,7 @@ fn handle_key(st: AppState, m: JsMsg) {
         ("KeyM", _) => toggle_mute(st),
         ("KeyS", false) => toggle_shuffle(st),
         ("KeyR", false) => cycle_repeat(st),
-        ("KeyL", false) => {
-            let mut s = st.settings;
-            let v = !s.peek().lyrics_open;
-            s.write().lyrics_open = v;
-        }
+        ("KeyL", false) => actions::toggle_lyrics(st),
         ("KeyQ", false) => {
             let mut s = st.settings;
             let v = !s.peek().queue_open;
@@ -386,17 +390,21 @@ fn handle_key(st: AppState, m: JsMsg) {
         ("__hidden", _) => {
             let mut h = st.hidden;
             h.set(true);
+            // свёрнуто (кнопкой или через панель задач): возвращение из панели
+            // задач пусть идёт системной анимацией, как у обычных приложений
+            chrome::set_window_transitions(true);
         }
         ("__visible", _) => {
             let mut h = st.hidden;
             h.set(false);
-            if *st.reopening.peek() {
-                spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(520)).await;
-                    let mut r = st.reopening;
-                    r.set(false);
-                });
-            }
+            // окно вернулось — после системной анимации снова выключаем её,
+            // чтобы развёртывание не вспыхивало белым
+            spawn(async move {
+                tokio::time::sleep(Duration::from_millis(700)).await;
+                if !*st.hidden.peek() {
+                    chrome::set_window_transitions(false);
+                }
+            });
         }
         ("__select", _) => {
             if let Some(id) = m.v {
@@ -531,6 +539,8 @@ pub fn App() -> Element {
     // ── старт: восстановить сессию, обновить локальную библиотеку ──
     let mut opening = use_signal(|| true);
     let mut maximized = use_signal(|| false);
+    let mut win_anim = use_signal(|| "");
+    let win_anim_gen = use_hook(|| Rc::new(Cell::new(0u32)));
     let page_stack = use_hook(|| Rc::new(RefCell::new(PageStack::default())));
     let page_tick = use_signal(|| 0u64);
     use_hook(move || {
@@ -575,6 +585,25 @@ pub fn App() -> Element {
                     let m = window().is_maximized();
                     if *maximized.peek() != m {
                         maximized.set(m);
+                        // своя плавная анимация развёртывания/восстановления (системная
+                        // выключена — она мигала белым): кнопка, двойной щелчок,
+                        // Win+↑ и перетаскивание к краю — всё проходит здесь
+                        let (anim, k) = {
+                            let s = st.settings.peek();
+                            (s.animations && !s.low_power, s.anim_speed.clamp(0.05, 3.0))
+                        };
+                        if anim && !*opening.peek() {
+                            let g = win_anim_gen.get() + 1;
+                            win_anim_gen.set(g);
+                            win_anim.set(if m { "win-grow" } else { "win-shrink" });
+                            let gen = win_anim_gen.clone();
+                            spawn(async move {
+                                tokio::time::sleep(Duration::from_millis((420.0 * k) as u64 + 40)).await;
+                                if gen.get() == g {
+                                    win_anim.set("");
+                                }
+                            });
+                        }
                     }
                 }
                 WindowEvent::CloseRequested => {
@@ -862,7 +891,7 @@ pub fn App() -> Element {
         if pause_bg && (!*st.focused.read() || *st.hidden.read()) { "bg-paused" } else { "" },
         if *st.edit_mode.read() { "edit-mode" } else { "" },
         if *st.closing.read() { "closing" } else { "" },
-        if *opening.read() && s.open_close_anim { "opening" } else { "" },
+        if *opening.read() && s.animations && !s.low_power { "opening" } else { "" },
         if *st.reopening.read() && !*st.hidden.read() { "opening" } else { "" },
         match intro {
             1 => "intro-wait",
@@ -870,6 +899,7 @@ pub fn App() -> Element {
             _ => "",
         },
         if *maximized.read() { "maximized" } else { "" },
+        *win_anim.read(),
         if player_collapsed { "player-collapsed" } else { "" },
         if st.theme.read().glass.liquid { "glass-liquid" } else { "" },
         if layout.player_md3 { "md3" } else { "" },
@@ -913,16 +943,20 @@ pub fn App() -> Element {
                     if layout.sidebar == SidebarPos::Left {
                         Sidebar {}
                     }
-                    if lyrics_open && lyrics_left {
-                        LyricsPanel {}
+                    if lyrics_left {
+                        LyricsHost { open: lyrics_open, left: true }
                     }
                     main { class: "content", "data-el": "content",
                         for (key , class , route) in pages {
                             div { key: "{key}", class: "{class}", {page_view(route)} }
                         }
+                        // под заголовком окна страница уходит в нарастающее размытие
+                        div { class: "top-blur", "aria-hidden": "true",
+                            span {} span {} span {} span {}
+                        }
                     }
-                    if lyrics_open && !lyrics_left {
-                        LyricsPanel {}
+                    if !lyrics_left {
+                        LyricsHost { open: lyrics_open, left: false }
                     }
                     if queue_open {
                         QueuePanel {}

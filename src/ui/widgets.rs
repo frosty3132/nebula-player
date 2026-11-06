@@ -46,8 +46,16 @@ pub fn Slider(
     #[props(default)] unit: String,
     #[props(default = 0)] decimals: usize,
     #[props(default)] mark: Option<f32>,
+    /// Применять значение только при отпускании ползунка (пока тянешь —
+    /// меняется лишь подпись). Нужно, когда значение двигает сам ползунок:
+    /// масштаб интерфейса растягивает страницу, ползунок уезжает из-под
+    /// курсора и значение убегало к максимуму.
+    #[props(default)]
+    commit_on_release: bool,
     oninput: EventHandler<f32>,
 ) -> Element {
+    let mut draft = use_signal(|| None::<f32>);
+    let value = draft.read().unwrap_or(value);
     let pct = if max > min { ((value - min) / (max - min) * 100.0).clamp(0.0, 100.0) } else { 0.0 };
     let label = format!("{:.*}{}", decimals, value, unit);
     let mark_style = mark.map(|m| format!("left: {}%;", ((m - min) / (max - min) * 100.0).clamp(0.0, 100.0)));
@@ -64,7 +72,19 @@ pub fn Slider(
                     style: "--p: {pct}%;",
                     oninput: move |e: FormEvent| {
                         if let Ok(v) = e.value().parse::<f32>() {
-                            oninput.call(v)
+                            if commit_on_release {
+                                draft.set(Some(v));
+                            } else {
+                                oninput.call(v)
+                            }
+                        }
+                    },
+                    onchange: move |e: FormEvent| {
+                        if commit_on_release {
+                            if let Ok(v) = e.value().parse::<f32>() {
+                                oninput.call(v);
+                            }
+                            draft.set(None);
                         }
                     },
                 }

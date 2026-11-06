@@ -1160,12 +1160,15 @@ button.mini:hover { background: var(--hover-2); }
 .player.ps-minimal { grid-template-columns: 1fr auto 1fr; }
 .p-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .p-cover-wrap { position: relative; width: calc(var(--player-h) - 26px); height: calc(var(--player-h) - 26px); flex: 0 0 auto; cursor: pointer; }
-.p-cover-wrap .cover { width: 100%; height: 100%; position: relative; z-index: 1; transition: transform var(--t-med) var(--ease); }
-.p-cover-wrap:hover .cover { transform: scale(1.05); }
+.p-cover-wrap .cover { width: 100%; height: 100%; position: relative; z-index: 1; transition: scale var(--t-med) var(--ease); }
+.p-cover-wrap:hover .cover { scale: 1.05; }
 .p-cover-wrap.shape-square .cover { border-radius: 4px; }
 .p-cover-wrap.shape-circle .cover, .p-cover-wrap.shape-vinyl .cover { border-radius: 50%; }
 .p-cover-wrap.shape-vinyl .cover::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: radial-gradient(circle, #0b0b10 0 9%, transparent 10% 28%, rgba(0, 0, 0, .25) 29% 30%, transparent 31% 45%, rgba(0, 0, 0, .22) 46% 47%, transparent 48%); }
-.cover.spin { animation: spin calc(9s * var(--anim, 1)) linear infinite; }
+/* винил крутится свойством rotate, а наведение увеличивает свойством scale:
+   они не мешают друг другу, и при наведении диск не замирает */
+.cover.spin { animation: vinyl-spin calc(9s * var(--anim, 1)) linear infinite; }
+@keyframes vinyl-spin { to { rotate: 360deg; } }
 .app.is-paused .cover.spin { animation-play-state: paused; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .beat-glow { position: absolute; inset: -6px; border-radius: 50%; background: radial-gradient(closest-side, rgba(var(--accent-rgb), .9), rgba(var(--accent2-rgb), .45), transparent); filter: blur(10px); opacity: calc(.15 + var(--beat) * .85); transform: scale(calc(.9 + var(--beat) * .35)); transition: transform 90ms linear, opacity 90ms linear; z-index: 0; }
@@ -1757,3 +1760,131 @@ textarea, input { user-select: text; }
 }
 .app.pl-bottom:not(.player-collapsed) .body > :not(.content) { margin-bottom: calc(var(--player-h) + 12px); }
 .app.pl-bottom:not(.player-collapsed) .page-wrap { padding-bottom: calc(var(--player-h) + 40px); }
+
+/* ═══════════ Открытие окна: проявление из прозрачного ═══════════
+   Системная анимация Windows выключена (она мигала белым снимком), поэтому
+   окно само растворяется из прозрачного: сначала проявляется под вуалью цвета
+   фона, потом вуаль уходит — размытие стекла появляется без скачка. */
+.app.opening { animation: app-open-fade calc(620ms * var(--anim, 1)) var(--ease-out) both; }
+.app.opening::before { animation: veil-open calc(620ms * var(--anim, 1)) ease both; }
+@keyframes app-open-fade {
+  from { opacity: 0; transform: scale(.965) translateY(8px); }
+  40% { opacity: 1; }
+  to { transform: none; }
+}
+@keyframes veil-open { 0%, 40% { opacity: 1; } to { opacity: 0; } }
+
+
+/* ═══════════ Страница под плеером — при любом положении ═══════════ */
+/* сверху (закреплён): плеер лежит над колонкой, боковые панели начинаются под ним */
+.app.pl-top .player {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: var(--tb-h);
+  margin: 0;
+  z-index: 30;
+}
+.app.pl-top:not(.player-collapsed) .body > :not(.content) { margin-top: calc(var(--player-h) + 12px); }
+.app.pl-top:not(.player-collapsed) .page-wrap { padding-top: calc(var(--player-h) + 20px); }
+.app.pl-top .eq-panel { top: calc(var(--tb-h) + var(--player-h) + 20px); }
+/* парящий снизу: над средней колонкой, боковые панели до низа окна */
+.app.pl-float .body { padding-bottom: 12px; }
+.app.pl-float .player {
+  left: calc(var(--col-l, 0px) + var(--col-w, 100%) / 2);
+  width: min(1100px, calc(var(--col-w, 100%) - 24px));
+}
+.app.pl-float:not(.pl-float-top):not(.player-collapsed) .page-wrap { padding-bottom: calc(var(--player-h) + 50px); }
+/* узкая колонка — та же компактная раскладка, что у парящего сверху */
+.app.pl-float[data-col="narrow"] .player,
+.app.pl-float[data-col="tight"] .player { grid-template-columns: minmax(0, 1fr) minmax(200px, 1.3fr) auto; gap: 12px; padding: 0 14px; }
+.app.pl-float[data-col="narrow"] .vol-track,
+.app.pl-float[data-col="tight"] .vol-track { width: 70px; }
+.app.pl-float[data-col="tight"] .vol-pct,
+.app.pl-float[data-col="tight"] .p-left .icon-btn { display: none; }
+
+/* Парящий сверху без верхней панели разделов: плеер прижат к самому верху
+   окна (между «назад/вперёд» и кнопками окна), а средняя колонка тянется до
+   верха — списки прокручиваются под стеклом плеера до конца и размываются. */
+.app.pl-float-top:not(.sb-top):not(.player-collapsed) .player { top: 7px; }
+.app.pl-float-top:not(.sb-top):not(.player-collapsed) .content { margin-top: calc(-1 * var(--tb-h)); }
+.app.pl-float-top:not(.sb-top):not(.player-collapsed) .page-wrap { padding-top: calc(var(--player-h) + 20px); }
+.app.pl-float-top:not(.sb-top):not(.player-collapsed) .eq-panel { top: calc(var(--player-h) + 20px); }
+
+/* Плавное развёртывание и восстановление окна. Системная анимация Windows
+   выключена (мигала белым снимком), поэтому окно меняет размер сразу, а
+   содержимое мягко «доезжает»: при развёртывании вырастает из чуть меньшего,
+   при восстановлении оседает из чуть большего. Только transform — стекло
+   остаётся размытым. Длительность совпадает с mod.rs (420 мс). */
+.app.win-grow { animation: win-grow calc(420ms * var(--anim, 1)) var(--ease-out) both; transform-origin: 50% 50%; }
+.app.win-shrink { animation: win-shrink calc(420ms * var(--anim, 1)) var(--ease-out) both; transform-origin: 50% 50%; }
+@keyframes win-grow { from { transform: scale(.93); border-radius: var(--radius-lg); } }
+@keyframes win-shrink { from { transform: scale(1.05); } }
+
+/* ═══════════ Мягкие края страницы без полос ═══════════
+   Строки, карточки и заголовки сами тают у верха и низа колонки (анимация по
+   прокрутке, только opacity), поэтому нет ни резкого обреза, ни полос поверх
+   фона. Скругление колонки убрано: у неё нет фона, а дуги обреза были видны.
+   С «рыбьим глазом» строки и карточки гаснут его собственной анимацией. */
+.content { border-radius: 0; }
+@supports (animation-timeline: view()) {
+  .app:not(.no-anim) .page-wrap :is(.section-head, .chips, .list-empty, .load-more),
+  .app:not(.no-anim):not(.fisheye) .page-wrap :is(.track-row, .track-card, .genre-card) {
+    animation: edge-melt linear both;
+    animation-timeline: view();
+    animation-range: cover 0% cover 100%;
+  }
+}
+@keyframes edge-melt {
+  0% { opacity: 0; }
+  9%, 91% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* ═══════════ Страница под заголовком окна ═══════════
+   Средняя колонка тянется до самого верха окна, под заголовок: страница
+   прокручивается туда и уходит в постепенно нарастающее размытие (несколько
+   слоёв, у каждого сильнее blur и своя плавная маска — без резкой границы).
+   Боковые панели по-прежнему начинаются под заголовком. */
+.app .content { margin-top: calc(-1 * var(--tb-h)); }
+.app .page-wrap { padding-top: calc(var(--tb-h) + 6px); }
+.app.pl-top:not(.player-collapsed) .page-wrap { padding-top: calc(var(--tb-h) + var(--player-h) + 20px); }
+.app.pl-float-top .page-wrap { padding-top: calc(var(--tb-h) + var(--player-h) + 26px); }
+.app.pl-float-top.player-collapsed .page-wrap { padding-top: calc(var(--tb-h) + 6px); }
+.app.pl-float-top:not(.sb-top):not(.player-collapsed) .page-wrap { padding-top: calc(var(--player-h) + 20px); }
+
+.top-blur {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: calc(var(--tb-h) + 26px);
+  z-index: 6;
+  pointer-events: none;
+  /* лёгкое затемнение к самому верху — кнопки окна остаются читаемыми */
+  background: linear-gradient(rgba(var(--bg-rgb), calc(var(--win-alpha) * .35)), transparent);
+}
+.top-blur span { position: absolute; inset: 0; }
+.top-blur span:nth-child(1) { backdrop-filter: blur(1px);  -webkit-mask-image: linear-gradient(to top, transparent 0%, #000 30%); mask-image: linear-gradient(to top, transparent 0%, #000 30%); }
+.top-blur span:nth-child(2) { backdrop-filter: blur(3px);  -webkit-mask-image: linear-gradient(to top, transparent 20%, #000 55%); mask-image: linear-gradient(to top, transparent 20%, #000 55%); }
+.top-blur span:nth-child(3) { backdrop-filter: blur(7px);  -webkit-mask-image: linear-gradient(to top, transparent 45%, #000 80%); mask-image: linear-gradient(to top, transparent 45%, #000 80%); }
+.top-blur span:nth-child(4) { backdrop-filter: blur(14px); -webkit-mask-image: linear-gradient(to top, transparent 70%, #000 100%); mask-image: linear-gradient(to top, transparent 70%, #000 100%); }
+.app.low-power .top-blur span { backdrop-filter: none; }
+
+/* Закрытие боковой панели текста: уезжает в сторону и гаснет, а её ширина
+   (вместе с отступом между колонками) плавно сворачивается — средняя колонка
+   расширяется без скачка. Длительность совпадает с LyricsHost (300 мс). */
+.lyrics.left { animation-name: slide-in-left; }
+@keyframes slide-in-left { from { opacity: 0; transform: translateX(-18px); } }
+.app .lyrics.leaving {
+  animation: lyrics-out calc(300ms * var(--anim, 1)) cubic-bezier(.4, 0, .2, 1) forwards;
+  pointer-events: none;
+  overflow: hidden;
+}
+.app .lyrics.leaving.left { animation-name: lyrics-out-left; }
+@keyframes lyrics-out {
+  to { opacity: 0; transform: translateX(24px); width: 0; margin-left: -12px; }
+}
+@keyframes lyrics-out-left {
+  to { opacity: 0; transform: translateX(-24px); width: 0; margin-right: -12px; }
+}

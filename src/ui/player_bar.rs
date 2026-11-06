@@ -349,7 +349,7 @@ fn Extras(order: Vec<Extra>) -> Element {
                     Extra::Like => rsx! {},
                     Extra::Lyrics => rsx! {
                         IconBtn { key: "{x:?}", icon: "lyrics", title: "Текст сбоку (L)", active: lyrics_open, size: 19,
-                            onclick: move |_| { let mut s = st.settings; let v = !s.peek().lyrics_open; s.write().lyrics_open = v; } }
+                            onclick: move |_| crate::ui::actions::toggle_lyrics(st) }
                     },
                     Extra::Fullscreen => rsx! {
                         IconBtn { key: "{x:?}", icon: "fullscreen", title: "Текст на весь экран (F)", active: fs, size: 19,
