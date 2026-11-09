@@ -17,7 +17,9 @@ dioxus = { version = "0.7.10", default-features = false, features = ["desktop", 
 dioxus-desktop = { version = "0.7.10", default-features = false, features = ["tokio_runtime", "transparent", "gnu"] }
 
 # async / сеть
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "net", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "net", "io-util", "process"] }
+# распаковка быстрой (не однофайловой) сборки yt-dlp для Windows
+zip = { version = "2", default-features = false, features = ["deflate"] }
 reqwest = { version = "0.13", default-features = false, features = ["native-tls", "charset", "http2", "json", "gzip", "form", "query", "system-proxy"] }
 futures-util = "0.3"
 

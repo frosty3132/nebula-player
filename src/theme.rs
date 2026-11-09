@@ -417,7 +417,11 @@ impl ElementStyle {
         if let Some(v) = self.padding {
             let _ = write!(d, "padding:{v}px !important;");
         }
-        if let Some(v) = self.margin {
+        // у каркаса (окно, колонка страницы) размер и отступы задаёт раскладка:
+        // фиксированная высота обрезала бы страницу в низком окне (настройки не
+        // докручивались до конца), а отступ ломал заход страницы под заголовок
+        let frame = is_essential(id);
+        if let Some(v) = self.margin.filter(|_| !frame) {
             let _ = write!(d, "margin:{v}px !important;");
         }
         if let Some(v) = self.font_size {
@@ -447,10 +451,10 @@ impl ElementStyle {
         if let Some(v) = self.order {
             let _ = write!(d, "order:{v} !important;");
         }
-        if let Some(v) = self.width {
+        if let Some(v) = self.width.filter(|_| !frame) {
             let _ = write!(d, "width:{v}px !important;min-width:0 !important;flex-basis:auto !important;");
         }
-        if let Some(v) = self.height {
+        if let Some(v) = self.height.filter(|_| !frame) {
             let _ = write!(d, "height:{v}px !important;");
         }
         if !d.is_empty() {
@@ -941,6 +945,18 @@ mod tests {
         let mut other = String::new();
         st.write_css("player", &mut other);
         assert!(other.contains("display:none"));
+    }
+
+    #[test]
+    fn frame_ignores_size_and_margin() {
+        let st = ElementStyle { height: Some(900.0), width: Some(280.0), margin: Some(0.0), radius: Some(4.0), ..Default::default() };
+        let mut frame = String::new();
+        st.write_css("content", &mut frame);
+        assert!(!frame.contains("height") && !frame.contains("width:") && !frame.contains("margin"), "{frame}");
+        assert!(frame.contains("border-radius:4px"));
+        let mut other = String::new();
+        st.write_css("hero", &mut other);
+        assert!(other.contains("height:900px") && other.contains("margin:0px"));
     }
 
     #[test]

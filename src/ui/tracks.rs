@@ -31,6 +31,14 @@ pub fn TrackList(
     // один колбэк на весь список вместо копии списка в каждой строке
     let (all, lbl) = (tracks.clone(), label.clone());
     let play_at = use_callback(move |i: usize| play_list(st, all.clone(), i, &lbl));
+    // превью в списке заранее подбираются на YouTube — по клику звук начнётся быстрее
+    let replace = st.settings.read().yt_replace_previews;
+    let shown = tracks.clone();
+    use_effect(use_reactive!(|shown, replace| {
+        if replace {
+            crate::services::svc().yt.prematch(shown);
+        }
+    }));
     rsx! {
         div { class: "track-list",
             for (i , t) in tracks.iter().enumerate() {
@@ -73,7 +81,9 @@ pub fn TrackRow(track: Track, index: usize, numbers: bool, playlist: Option<Stri
     let (t1, t2, t3) = (track.clone(), track.clone(), track.clone());
     let pl1 = playlist.clone();
     let pl2 = playlist.clone();
-    let unavailable = track.is_blocked();
+    let yt_replace = st.settings.read().yt_replace_previews;
+    // недоступный на SoundCloud трек сыграет с YouTube, если включена замена
+    let unavailable = track.is_blocked() && !yt_replace;
     let class = format!(
         "track-row{}{}{}",
         if is_now { " now" } else { "" },
@@ -111,7 +121,11 @@ pub fn TrackRow(track: Track, index: usize, numbers: bool, playlist: Option<Stri
             div { class: "tr-main",
                 div { class: "tr-title",
                     span { class: "ellipsis", "{track.title}" }
-                    if track.is_preview() {
+                    if track.id.starts_with("yt:") {
+                        span { class: "badge soft", title: "Трек с YouTube", "YouTube" }
+                    } else if (track.is_preview() || track.is_blocked()) && yt_replace {
+                        span { class: "badge soft", title: "На SoundCloud только превью — сыграет полная версия с YouTube", "полный · YT" }
+                    } else if track.is_preview() {
                         span { class: "badge", "превью" }
                     }
                     if track.is_local() {

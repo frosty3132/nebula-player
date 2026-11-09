@@ -97,16 +97,57 @@ pub fn Slider(
     }
 }
 
+/// Выпадающий список со стеклянной панелью. Родной `<select>` рисует сама
+/// Windows — его список нельзя ни размыть, ни скруглить, поэтому свой.
+/// Закрывается выбором, Esc или щелчком мимо (потеря фокуса кнопкой).
 #[component]
 pub fn Select(value: String, options: Vec<(String, String)>, onchange: EventHandler<String>) -> Element {
+    let mut open = use_signal(|| false);
+    let current = options.iter().find(|(v, _)| *v == value).map(|(_, l)| l.clone()).unwrap_or_else(|| value.clone());
     rsx! {
-        select {
-            class: "select",
+        div {
+            class: if open() { "dd open" } else { "dd" },
             "data-el": "input",
-            value: "{value}",
-            onchange: move |e: FormEvent| onchange.call(e.value()),
-            for (v , label) in options.iter() {
-                option { value: "{v}", selected: *v == value, "{label}" }
+            onkeydown: move |e: KeyboardEvent| {
+                if e.key() == Key::Escape && open() {
+                    e.stop_propagation();
+                    open.set(false);
+                }
+            },
+            button {
+                class: "dd-btn",
+                r#type: "button",
+                "aria-haspopup": "listbox",
+                "aria-expanded": "{open()}",
+                onclick: move |_| open.toggle(),
+                onfocusout: move |_| open.set(false),
+                span { class: "dd-label ellipsis", "{current}" }
+                span { class: "dd-chevron", Icon { name: "down", size: 16 } }
+            }
+            if open() {
+                div {
+                    class: "dd-panel",
+                    role: "listbox",
+                    // щелчок внутри панели не забирает фокус у кнопки — иначе
+                    // список закрылся бы раньше, чем засчитается выбор
+                    onmousedown: move |e| e.prevent_default(),
+                    for (v , label) in options.iter().cloned() {
+                        button {
+                            key: "{v}",
+                            class: if v == value { "dd-opt active" } else { "dd-opt" },
+                            r#type: "button",
+                            role: "option",
+                            onclick: move |_| {
+                                open.set(false);
+                                onchange.call(v.clone());
+                            },
+                            span { class: "ellipsis", "{label}" }
+                            if v == value {
+                                Icon { name: "check", size: 16 }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -185,17 +226,30 @@ pub fn Row(label: String, #[props(default)] hint: String, children: Element) -> 
     }
 }
 
+/// Карточка настроек: плитка с иконкой, заголовок и короткое описание, под
+/// ними строки. `wide` — на всю ширину сетки (например, эквалайзер).
 #[component]
-pub fn Card(title: String, #[props(default)] icon: String, children: Element) -> Element {
+pub fn Card(
+    title: String,
+    #[props(default)] icon: String,
+    #[props(default)] desc: String,
+    #[props(default)] wide: bool,
+    children: Element,
+) -> Element {
     rsx! {
-        section { class: "set-card glass",
-            h3 { class: "set-card-title",
+        section { class: if wide { "set-card glass wide" } else { "set-card glass" },
+            header { class: "set-card-head",
                 if !icon.is_empty() {
-                    Icon { name: icon.clone(), size: 18 }
+                    span { class: "set-card-icon", Icon { name: icon.clone(), size: 18 } }
                 }
-                "{title}"
+                div { class: "set-card-heading",
+                    h3 { class: "set-card-title", "{title}" }
+                    if !desc.is_empty() {
+                        p { class: "set-card-desc", "{desc}" }
+                    }
+                }
             }
-            {children}
+            div { class: "set-card-body", {children} }
         }
     }
 }

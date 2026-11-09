@@ -21,6 +21,7 @@ mod spotify;
 mod theme;
 mod ui;
 mod yandex;
+mod youtube;
 
 use dioxus::desktop::tao::dpi::{LogicalSize, PhysicalPosition};
 use dioxus::desktop::tao::window::Icon;

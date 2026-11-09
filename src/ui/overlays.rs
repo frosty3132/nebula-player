@@ -150,7 +150,7 @@ pub fn ContextMenu() -> Element {
             }
             button { class: "ctx-item", onclick: move |_| { close(); open_on_soundcloud(st, &t7); },
                 Icon { name: "external", size: 17 }
-                if t8.is_local() { "Показать в папке" } else { "Открыть на SoundCloud" }
+                if t8.is_local() { "Показать в папке" } else if t8.id.starts_with("yt:") { "Открыть на YouTube" } else { "Открыть на SoundCloud" }
             }
         }
     }

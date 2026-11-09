@@ -245,7 +245,7 @@ fn Hero() -> Element {
         18..=22 => "Добрый вечер",
         _ => "Доброй ночи",
     };
-    let sc_ready = *st.sc_ready.read();
+    let logged_in = st.sc_user.read().is_some();
     // в приветствии — никнейм аккаунта SoundCloud, без входа — «путешественник»
     let name = st.sc_user.read().as_ref().map(|u| u.username.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| "путешественник".to_string());
     let viz = {
@@ -263,14 +263,14 @@ fn Hero() -> Element {
             }
             div { class: "hero-text",
                 h1 { class: "hero-title", "{greeting}, {name}" }
-                p { class: "hero-sub", "Музыка из SoundCloud и с вашего компьютера, синхронные тексты из LRCLIB и интерфейс, который меняется как вам угодно." }
+                p { class: "hero-sub", "Музыка из SoundCloud, YouTube и с вашего компьютера, синхронные тексты из LRCLIB и интерфейс, который меняется как вам угодно." }
                 if stats_on {
                     ListeningStats { class: "in-hero" }
                 }
-                if !sc_ready {
+                if !logged_in {
                     div { class: "hero-note",
                         Icon { name: "cloud", size: 18 }
-                        span { "Войдите в SoundCloud, чтобы слушать и искать миллионы треков. Без входа доступна музыка с компьютера." }
+                        span { "Слушать и искать можно без входа. Войдите в SoundCloud, если нужны ваши лайки, лента и плейлисты." }
                         LoginButton { class: "small" }
                     }
                 }
@@ -489,6 +489,7 @@ pub fn Search() -> Element {
                 match t {
                     "playlists" => svc().sc.search_playlists(&q2).await.map(Results::Playlists),
                     "users" => svc().sc.search_users(&q2).await.map(Results::Users),
+                    "youtube" => svc().yt.search(&q2).await.map(Results::Tracks),
                     _ => svc().sc.search_tracks(&q2).await.map(Results::Tracks),
                 }
             })
@@ -525,6 +526,7 @@ pub fn Search() -> Element {
                 match kind {
                     "playlists" => svc().sc.next_playlists(&n2).await.map(Results::Playlists),
                     "users" => svc().sc.next_users(&n2).await.map(Results::Users),
+                    "youtube" => svc().yt.next_tracks(&n2).await.map(Results::Tracks),
                     _ => svc().sc.next_tracks(&n2).await.map(Results::Tracks),
                 }
             })
@@ -565,7 +567,7 @@ pub fn Search() -> Element {
     } else {
         Vec::new()
     };
-    let tabs = [("tracks", "Треки"), ("playlists", "Плейлисты"), ("users", "Исполнители"), ("local", "Моя музыка")];
+    let tabs = [("tracks", "Треки"), ("playlists", "Плейлисты"), ("users", "Исполнители"), ("youtube", "YouTube"), ("local", "Моя музыка")];
 
     // Содержимое под вкладками въезжает слева/справа при смене вкладки.
     // Ключ — вкладка, а при пустом запросе — «idle»: подсказки не дёргаются,
@@ -628,7 +630,7 @@ pub fn Search() -> Element {
                         if p.items.is_empty() {
                             Empty { icon: "search", title: "Ничего не найдено", text: "Попробуйте другой запрос." }
                         } else {
-                            TrackList { tracks: p.items.clone(), label: format!("Поиск: {q_now}"), loading_more: *more_loading.read(),
+                            TrackList { tracks: p.items.clone(), label: if tab_now == "youtube" { format!("YouTube: {q_now}") } else { format!("Поиск: {q_now}") }, loading_more: *more_loading.read(),
                                 on_more: if p.next.is_some() { Some(EventHandler::new(load_more)) } else { None } }
                         }
                     },
