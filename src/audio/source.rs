@@ -165,6 +165,9 @@ impl ProgBuffer {
     }
 
     async fn download(self: Arc<Self>, http: reqwest::Client, url: String, auth: Option<String>) {
+        if is_chunked_host(&url) {
+            return self.download_chunked(http, url).await;
+        }
         let mut failures = 0u64;
         loop {
             if self.cancel.load(Ordering::Relaxed) {
@@ -224,6 +227,113 @@ impl ProgBuffer {
                     }
                 }
                 Err(e) => tracing::warn!("ошибка запроса потока: {e}"),
+            }
+            failures += 1;
+            if failures > 5 {
+                self.fail("не удалось загрузить поток".into());
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(500 * failures)).await;
+        }
+    }
+
+    /// Загрузка кусками через Range. YouTube (googlevideo) режет запрос «весь
+    /// файл сразу» примерно до 30 КБ/с, а каждый кусок отдаёт на полной скорости
+    /// (так же качает и сам yt-dlp). Первый кусок маленький — звук начинается
+    /// сразу, дальше крупнее.
+    async fn download_chunked(self: Arc<Self>, http: reqwest::Client, url: String) {
+        const FIRST: u64 = 1 << 20;
+        const NEXT: u64 = 4 << 20;
+        let mut failures = 0u64;
+        loop {
+            if self.cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            let (have, total) = {
+                let st = self.st.lock();
+                (st.data.len() as u64, st.total)
+            };
+            if total.is_some_and(|t| have >= t) {
+                self.st.lock().done = true;
+                self.cv.notify_all();
+                return;
+            }
+            let size = if have == 0 { FIRST } else { NEXT };
+            let end = total.map_or(have + size, |t| t.min(have + size)) - 1;
+            let res = http.get(&url).header(RANGE, format!("bytes={have}-{end}")).send().await;
+            let ok = match res {
+                Ok(mut resp) => {
+                    let status = resp.status();
+                    if status.is_client_error() && status.as_u16() != 429 && status.as_u16() != 416 {
+                        self.fail(format!("HTTP {status}"));
+                        return;
+                    }
+                    if status.as_u16() == 416 {
+                        // запросили за концом файла — значит, всё скачано
+                        let mut st = self.st.lock();
+                        st.done = true;
+                        st.total = Some(st.data.len() as u64);
+                        drop(st);
+                        self.cv.notify_all();
+                        return;
+                    }
+                    if status.is_success() {
+                        // «bytes a-b/total» — полный размер файла
+                        let full = resp
+                            .headers()
+                            .get(reqwest::header::CONTENT_RANGE)
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|v| v.rsplit('/').next())
+                            .and_then(|v| v.trim().parse::<u64>().ok());
+                        {
+                            let mut st = self.st.lock();
+                            if status.as_u16() != 206 {
+                                // Range проигнорирован — пришёл весь файл с начала
+                                st.data.clear();
+                                st.total = resp.content_length();
+                            } else if st.total.is_none() {
+                                st.total = full;
+                            }
+                        }
+                        let mut got = true;
+                        loop {
+                            if self.cancel.load(Ordering::Relaxed) {
+                                return;
+                            }
+                            match resp.chunk().await {
+                                Ok(Some(chunk)) => {
+                                    self.st.lock().data.extend_from_slice(&chunk);
+                                    self.cv.notify_all();
+                                }
+                                Ok(None) => break,
+                                Err(e) => {
+                                    tracing::warn!("загрузка куска оборвалась: {e}");
+                                    got = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if status.as_u16() != 206 && got {
+                            let mut st = self.st.lock();
+                            st.done = true;
+                            st.total = Some(st.data.len() as u64);
+                            drop(st);
+                            self.cv.notify_all();
+                            return;
+                        }
+                        got
+                    } else {
+                        false
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("ошибка запроса потока: {e}");
+                    false
+                }
+            };
+            if ok {
+                failures = 0;
+                continue;
             }
             failures += 1;
             if failures > 5 {
@@ -767,5 +877,47 @@ mod tests {
         assert!(auth_for("https://api.soundcloud.com/tracks/1/streams", &a).is_some());
         assert!(auth_for("https://playback.media-streaming.soundcloud.cloud/x.m3u8", &a).is_some());
         assert!(auth_for("https://evil.example.com/soundcloud.com", &a).is_none());
+    }
+}
+
+/// Хосты, которые режут скорость запроса «весь файл сразу» и отдают быстро
+/// только куски (YouTube / googlevideo).
+fn is_chunked_host(url: &str) -> bool {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|h| h.ends_with(".googlevideo.com") || h.ends_with(".youtube.com"))
+}
+
+#[cfg(test)]
+mod chunk_tests {
+    use super::is_chunked_host;
+
+    #[test]
+    fn youtube_streams_are_chunked() {
+        assert!(is_chunked_host("https://rr3---sn-ivgt1vou2pm-2v1l.googlevideo.com/videoplayback?expire=1&itag=140"));
+        assert!(!is_chunked_host("https://cf-media.sndcdn.com/abc.mp3"));
+        assert!(!is_chunked_host("not a url"));
+    }
+
+    /// Живая проверка: `NEBULA_TEST_YT_URL=<ссылка googlevideo> cargo test live_chunked -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_chunked_youtube_download() {
+        let Ok(url) = std::env::var("NEBULA_TEST_YT_URL") else { return };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let http = reqwest::Client::builder().user_agent("NebulaPlayer/test").build().unwrap();
+        let started = std::time::Instant::now();
+        let buf = super::ProgBuffer::start(http, rt.handle(), url, None);
+        while buf.progress() < 1.0 && started.elapsed() < std::time::Duration::from_secs(30) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let secs = started.elapsed().as_secs_f64();
+        let head = buf.head(12);
+        let size = buf.st.lock().data.len();
+        println!("скачано {size} байт за {secs:.2} с ({:.1} МБ/с)", size as f64 / secs / 1e6);
+        assert!(buf.progress() >= 1.0, "файл не докачался за 30 с");
+        assert_eq!(&head[4..8], b"ftyp", "это не MP4");
+        assert!(size as f64 / secs > 1e6, "медленнее 1 МБ/с");
     }
 }

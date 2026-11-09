@@ -59,6 +59,11 @@ pub struct ImportPlaylist {
 /// Сопоставить треки плейлиста с локальной библиотекой и SoundCloud.
 /// Результат — в исходном порядке; ненайденные — заглушки (`access: unavailable`).
 pub async fn match_tracks(playlist: &ImportPlaylist, local: &[Track], sc: Option<&SoundCloud>) -> Vec<Track> {
+    match_tracks_with(playlist, local, sc, MAX_SC_MATCHES).await
+}
+
+/// То же с другим пределом поиска в SoundCloud (для больших списков вроде любимых треков).
+pub async fn match_tracks_with(playlist: &ImportPlaylist, local: &[Track], sc: Option<&SoundCloud>, max_sc: usize) -> Vec<Track> {
     let mut result = vec![None; playlist.tracks.len()];
     let mut pending = Vec::new();
     for (index, source) in playlist.tracks.iter().enumerate() {
@@ -72,7 +77,7 @@ pub async fn match_tracks(playlist: &ImportPlaylist, local: &[Track], sc: Option
     }
 
     if let Some(sc) = sc {
-        let resolved = stream::iter(pending.iter().take(MAX_SC_MATCHES).cloned().map(|(index, source)| async move {
+        let resolved = stream::iter(pending.iter().take(max_sc).cloned().map(|(index, source)| async move {
             let found = search_soundcloud(sc, &source).await;
             (index, found)
         }))

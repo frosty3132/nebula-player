@@ -102,6 +102,8 @@ pub struct Settings {
     pub crossfade_s: f32,
     pub remember_session: bool,
     pub skip_previews: bool,
+    /// Превью и недоступные треки SoundCloud играть полной версией с YouTube (yt-dlp).
+    pub yt_replace_previews: bool,
     pub shuffle: bool,
     pub repeat: RepeatMode,
     pub seek_step_s: f32,
@@ -180,6 +182,7 @@ impl Default for Settings {
             crossfade_s: 6.0,
             remember_session: true,
             skip_previews: false,
+            yt_replace_previews: true,
             shuffle: false,
             repeat: RepeatMode::Off,
             seek_step_s: 5.0,

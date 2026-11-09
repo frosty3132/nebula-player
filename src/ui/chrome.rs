@@ -339,7 +339,7 @@ pub fn Sidebar() -> Element {
                                 super::sc_account::start_login(st)
                             }
                         },
-                        span { class: if sc_ready { "dot on" } else { "dot" } }
+                        span { class: if sc_ready && st.sc_user.read().is_some() { "dot on" } else { "dot" } }
                         match user {
                             Some(u) => rsx! { span { "{u.username}" } },
                             None if *st.sc_login_busy.read() => rsx! { span { "Жду вход в SoundCloud…" } },

@@ -10,7 +10,6 @@ use super::state::*;
 use super::widgets::IconBtn;
 use crate::import::{self, Service};
 use crate::services::svc;
-use crate::spotify::DASHBOARD_URL;
 use dioxus::core::spawn_forever;
 use dioxus::prelude::*;
 use futures_util::stream::{self, StreamExt};
@@ -55,7 +54,7 @@ fn ServicePicker(service: Signal<Option<Service>>) -> Element {
                 }
                 span { class: "ic-text",
                     span { class: "ic-title", "Spotify" }
-                    span { class: "ic-sub", "Публичный плейлист по ссылке · нужен ключ приложения" }
+                    span { class: "ic-sub", "Свои плейлисты по ссылке · нужен вход в Spotify" }
                 }
                 Icon { name: "forward", size: 18 }
             }
@@ -70,21 +69,14 @@ fn ImportForm(service: Service, picker: Signal<Option<Service>>) -> Element {
     let mut url = use_signal(String::new);
     let busy = use_signal(|| false);
     let status = use_signal(|| None::<(bool, String)>);
-    // Яндекс: необязательный OAuth-токен; Spotify: ключи приложения
+    // Яндекс: необязательный OAuth-токен; Spotify: нужен привязанный аккаунт
     let mut token = use_signal(|| svc().yandex.token());
     let mut show_token = use_signal(|| !svc().yandex.token().is_empty());
-    let mut client_id = use_signal(|| svc().spotify.client_id());
-    let mut client_secret = use_signal(String::new);
-    let mut keys_saved = use_signal(|| svc().spotify.configured());
-    let mut edit_keys = use_signal(|| !svc().spotify.configured());
+    let sp_linked = svc().spotify.user().is_some();
 
     let run = move || {
         let input = url.peek().trim().to_string();
         if input.is_empty() || *busy.peek() {
-            return;
-        }
-        if service == Service::Spotify && !*keys_saved.peek() {
-            put(status, Some((false, "Сначала сохраните Client ID и Client Secret".to_string())));
             return;
         }
         start_import(st, service, input, busy, status);
@@ -93,7 +85,7 @@ fn ImportForm(service: Service, picker: Signal<Option<Service>>) -> Element {
     let busy_now = *busy.read();
     let (placeholder, hint) = match service {
         Service::Yandex => ("https://music.yandex.ru/users/…/playlists/…", "Ссылка вида music.yandex.ru/users/…/playlists/… или music.yandex.ru/playlists/… Плейлист должен быть публичным."),
-        Service::Spotify => ("https://open.spotify.com/playlist/…", "Ссылка вида open.spotify.com/playlist/… (в Spotify: «Поделиться» → «Скопировать ссылку»). Плейлист должен быть публичным."),
+        Service::Spotify => ("https://open.spotify.com/playlist/…", "Ссылка на ваш собственный или совместный плейлист (в Spotify: «Поделиться» → «Скопировать ссылку»). Все плейлисты и любимые треки сразу — в Настройки → SoundCloud → Spotify."),
     };
     rsx! {
         div { class: "import-form",
@@ -101,31 +93,17 @@ fn ImportForm(service: Service, picker: Signal<Option<Service>>) -> Element {
                 IconBtn { icon: "back", title: "К выбору сервиса", size: 18, onclick: move |_| if !*busy.peek() { picker.set(None) } }
                 span { class: "import-service", "{service.label()}" }
             }
-            if service == Service::Spotify && *edit_keys.read() {
+            if service == Service::Spotify && !sp_linked {
                 div { class: "import-keys",
-                    p { class: "modal-text",
-                        "Spotify отдаёт плейлисты только приложениям с ключом. Это делается один раз и бесплатно: откройте "
-                        a { class: "link", href: DASHBOARD_URL, target: "_blank", "developer.spotify.com/dashboard" }
-                        " → Create app (название любое, Redirect URI — http://127.0.0.1:8888/callback, отметьте Web API) → Settings — и скопируйте Client ID и Client Secret сюда. Ключи хранятся только на этом компьютере."
-                    }
-                    input { class: "import-input", placeholder: "Client ID", value: "{client_id}", spellcheck: false,
-                        oninput: move |e: FormEvent| client_id.set(e.value()) }
-                    input { class: "import-input", r#type: "password", placeholder: "Client Secret", value: "{client_secret}", spellcheck: false,
-                        oninput: move |e: FormEvent| client_secret.set(e.value()) }
+                    p { class: "modal-text", "Spotify отдаёт треки только из ваших плейлистов и только после входа в аккаунт. Привяжите Spotify в настройках — там же можно перенести все плейлисты и любимые треки разом." }
                     div { class: "import-row end",
-                        if *keys_saved.read() {
-                            button { class: "btn ghost", onclick: move |_| edit_keys.set(false), "Отмена" }
-                        }
                         button { class: "btn primary",
-                            disabled: client_id.read().trim().is_empty() || client_secret.read().trim().is_empty(),
                             onclick: move |_| {
-                                svc().spotify.set_credentials(&client_id.peek(), &client_secret.peek());
-                                keys_saved.set(true);
-                                edit_keys.set(false);
-                                client_secret.set(String::new());
-                                put(status, Some((true, "Ключи Spotify сохранены".to_string())));
+                                let mut m = st.modal;
+                                m.set(None);
+                                navigate(st, Route::Settings(SettingsTab::Account));
                             },
-                            "Сохранить ключи"
+                            Icon { name: "login", size: 18 } "Привязать Spotify"
                         }
                     }
                 }
@@ -148,9 +126,7 @@ fn ImportForm(service: Service, picker: Signal<Option<Service>>) -> Element {
                     }
                 }
                 match service {
-                    Service::Spotify => rsx! {
-                        button { class: "import-more", onclick: move |_| edit_keys.set(true), "Изменить ключи приложения Spotify" }
-                    },
+                    Service::Spotify => rsx! {},
                     Service::Yandex => rsx! {
                         if *show_token.read() {
                             div { class: "import-row",
@@ -181,12 +157,20 @@ fn ImportForm(service: Service, picker: Signal<Option<Service>>) -> Element {
 
 /// Скачать плейлист, сопоставить треки, сохранить как локальный плейлист.
 /// Задача живёт дольше окна (`spawn_forever`): закрытие окна импорт не прерывает.
-fn start_import(st: AppState, service: Service, input: String, busy: Signal<bool>, status: Signal<Option<(bool, String)>>) {
+pub fn start_import(st: AppState, service: Service, input: String, busy: Signal<bool>, status: Signal<Option<(bool, String)>>) {
+    spawn_forever(async move {
+        run_import(st, service, input, busy, status).await;
+    });
+}
+
+/// То же, но можно дождаться: true — плейлист создан. Так «Перенести все»
+/// импортирует плейлисты по очереди, не нагружая поиск SoundCloud.
+pub async fn run_import(st: AppState, service: Service, input: String, busy: Signal<bool>, status: Signal<Option<(bool, String)>>) -> bool {
     put(busy, true);
     put(status, Some((true, format!("Загружаю плейлист из {}…", service.label()))));
     let local = st.local.peek().clone();
     let sc_ready = *st.sc_ready.peek();
-    spawn_forever(async move {
+    {
         let fetched = bg(async move {
             match service {
                 Service::Yandex => svc().yandex.import_playlist(&input).await,
@@ -211,12 +195,12 @@ fn start_import(st: AppState, service: Service, input: String, busy: Signal<bool
                 if !import_dialog_open(st) {
                     toast(st, ToastKind::Error, format!("Импорт из {}: {e}", service.label()));
                 }
-                return;
+                return false;
             }
         };
         let total = playlist.tracks.len();
         let title = playlist.title.clone();
-        let search_note = if sc_ready { "в вашей музыке и на SoundCloud" } else { "в вашей музыке (войдите в SoundCloud, чтобы искать и там)" };
+        let search_note = if sc_ready { "в вашей музыке и на SoundCloud" } else { "в вашей музыке" };
         put(status, Some((true, format!("«{title}»: ищу {total} треков {search_note}…"))));
 
         let matched = bg(async move {
@@ -254,7 +238,8 @@ fn start_import(st: AppState, service: Service, input: String, busy: Signal<bool
             m.set(None);
             navigate(st, Route::LocalPlaylist(id));
         }
-    });
+    }
+    true
 }
 
 fn import_dialog_open(st: AppState) -> bool {

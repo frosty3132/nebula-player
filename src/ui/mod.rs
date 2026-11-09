@@ -12,6 +12,8 @@ mod overlays;
 mod pages;
 mod player_bar;
 mod sc_account;
+mod spotify_card;
+mod settings_index;
 mod settings_page;
 mod state;
 mod theme_editor;

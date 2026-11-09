@@ -7,7 +7,7 @@ use crate::audio::{MediaSpec, PlaybackState};
 use crate::library::SavedSession;
 use crate::model::{ArtSize, Track};
 use crate::services::svc;
-use crate::settings::RepeatMode;
+use crate::settings::{RepeatMode, StreamQuality};
 use dioxus::core::spawn_forever;
 use dioxus::prelude::*;
 use std::future::Future;
@@ -112,11 +112,11 @@ pub fn play_list(state: AppState, tracks: Vec<Track>, start: usize, label: &str)
     if tracks.is_empty() {
         return;
     }
-    let (shuffle, skip_previews) = {
+    let (shuffle, skip_previews, replace) = {
         let s = state.settings.peek();
-        (s.shuffle, s.skip_previews)
+        (s.shuffle, s.skip_previews, s.yt_replace_previews)
     };
-    let (tracks, start) = playable_from(tracks, start, skip_previews);
+    let (tracks, start) = playable_from(tracks, start, skip_previews, replace);
     if tracks.is_empty() {
         toast(state, ToastKind::Error, "Эти треки недоступны для воспроизведения");
         return;
@@ -130,12 +130,14 @@ pub fn play_list(state: AppState, tracks: Vec<Track>, start: usize, label: &str)
 /// пересчитывает индекс выбранного по позиции, а не по сдвигу: иначе
 /// недоступный трек выше выбранного включал бы соседний снизу. Выбранное
 /// превью остаётся; если сам выбранный недоступен — следующий доступный.
-fn playable_from(tracks: Vec<Track>, start: usize, skip_previews: bool) -> (Vec<Track>, usize) {
+/// С заменой с YouTube (`replace`) превью и недоступные треки остаются в очереди:
+/// они сыграют полной версией с YouTube.
+fn playable_from(tracks: Vec<Track>, start: usize, skip_previews: bool, replace: bool) -> (Vec<Track>, usize) {
     let start = start.min(tracks.len().saturating_sub(1));
     let mut out = Vec::with_capacity(tracks.len());
     let mut new_start = None;
     for (i, t) in tracks.into_iter().enumerate() {
-        if t.is_blocked() || (skip_previews && t.is_preview() && i != start) {
+        if !replace && (t.is_blocked() || (skip_previews && t.is_preview() && i != start)) {
             continue;
         }
         if i >= start && new_start.is_none() {
@@ -205,9 +207,41 @@ async fn resolve(state: AppState, track: &Track) -> Result<(MediaSpec, bool), St
             return Ok((spec, pre.preview));
         }
     }
-    let quality = state.settings.peek().quality;
-    let t = track.clone();
-    bg(async move { svc().sc.stream(&t, quality).await }).await.unwrap_or_else(|| Err("внутренняя ошибка".into()))
+    let (quality, replace) = {
+        let s = state.settings.peek();
+        (s.quality, s.yt_replace_previews)
+    };
+    let res = bg(fetch_stream(track.clone(), quality, replace)).await.unwrap_or_else(|| Err("внутренняя ошибка".into()));
+    res.map(|(spec, preview, from_yt)| {
+        if from_yt {
+            toast(state, ToastKind::Info, "Вместо превью SoundCloud играет полная версия с YouTube");
+        }
+        (spec, preview)
+    })
+}
+
+/// Поток для трека: трек YouTube; превью или недоступный трек SoundCloud — полной
+/// версией с YouTube (если включено); иначе — сам SoundCloud.
+/// Возвращает (спецификация, это 30-секундное превью, поток взят с YouTube вместо SoundCloud).
+async fn fetch_stream(t: Track, quality: StreamQuality, replace: bool) -> Result<(MediaSpec, bool, bool), String> {
+    if crate::youtube::video_id(&t).is_some() {
+        return svc().yt.stream(&t).await.map(|spec| (spec, false, false));
+    }
+    let tried = replace && (t.is_preview() || t.is_blocked());
+    if tried {
+        match svc().yt.replacement(&t).await {
+            Ok(spec) => return Ok((spec, false, true)),
+            Err(e) => tracing::info!("замена с YouTube для «{}»: {e}", t.title),
+        }
+    }
+    let (spec, preview) = svc().sc.stream(&t, quality).await?;
+    // превью выяснилось только по самому потоку (API сайта)
+    if preview && replace && !tried {
+        if let Ok(spec) = svc().yt.replacement(&t).await {
+            return Ok((spec, false, true));
+        }
+    }
+    Ok((spec, preview, false))
 }
 
 pub fn skip_after_error(state: AppState, failed_id: u64) {
@@ -645,10 +679,12 @@ pub fn maybe_preload(state: AppState) {
         return;
     }
     spawn_forever(async move {
-        if !next.is_local() && svc().sc.configured() {
-            let quality = state.settings.peek().quality;
-            let t = next.clone();
-            if let Some(Ok((spec, preview))) = bg(async move { svc().sc.stream(&t, quality).await }).await {
+        if crate::youtube::video_id(&next).is_some() || svc().sc.configured() {
+            let (quality, replace) = {
+                let s = state.settings.peek();
+                (s.quality, s.yt_replace_previews)
+            };
+            if let Some(Ok((spec, preview, _))) = bg(fetch_stream(next.clone(), quality, replace)).await {
                 svc().player.preload(spec.clone());
                 pre.set(Preloaded { track_id: next.id.clone(), spec: Some(spec), preview, at: Some(Instant::now()) });
             }
@@ -712,15 +748,19 @@ mod tests {
     #[test]
     fn blocked_tracks_above_do_not_shift_the_choice() {
         let list = vec![t("a", ""), t("b", "blocked"), t("c", ""), t("d", "")];
-        let (q, i) = playable_from(list, 2, false);
+        let (q, i) = playable_from(list, 2, false, false);
         assert_eq!(q[i].id, "c");
         // выбран недоступный — играет следующий доступный
         let list = vec![t("a", ""), t("b", "blocked"), t("c", "")];
-        let (q, i) = playable_from(list, 1, false);
+        let (q, i) = playable_from(list, 1, false, false);
         assert_eq!(q[i].id, "c");
         // превью выше пропускаются, выбранное превью остаётся
         let list = vec![t("p", "preview"), t("x", "blocked"), t("q", "preview"), t("z", "")];
-        let (q, i) = playable_from(list, 2, true);
+        let (q, i) = playable_from(list, 2, true, false);
         assert_eq!((q.len(), q[i].id.as_str()), (2, "q"));
+        // с заменой с YouTube ничего не выкидываем
+        let list = vec![t("p", "preview"), t("x", "blocked"), t("q", "preview"), t("z", "")];
+        let (q, i) = playable_from(list, 2, true, true);
+        assert_eq!((q.len(), q[i].id.as_str()), (4, "q"));
     }
 }

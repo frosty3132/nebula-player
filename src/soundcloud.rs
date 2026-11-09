@@ -9,6 +9,11 @@
 //! диске: лимит SoundCloud — 50 токенов за 12 часов), личные данные — Authorization Code + PKCE
 //! с приёмом кода на локальном порту. Ключи выдаются на https://soundcloud.com/you/apps.
 //!
+//! **Без входа** (гостевой режим): тот же API сайта, но без токена — с публичным
+//! client_id веб-клиента, который мы сами берём из скриптов soundcloud.com (так же
+//! делает yt-dlp). Доступны поиск, жанры, исполнители, плейлисты, похожие и
+//! прослушивание; лайкам, ленте и своим плейлистам нужен вход.
+//!
 //! Если есть веб-сессия, используется она. Всё хранится только локально в `soundcloud.json`.
 
 use crate::audio::MediaSpec;
@@ -17,7 +22,7 @@ use crate::paths::{now_secs, paths, read_json, write_json};
 use crate::settings::StreamQuality;
 use base64::Engine as _;
 use parking_lot::Mutex;
-use reqwest::header::{ACCEPT, AUTHORIZATION};
+use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -63,12 +68,15 @@ pub struct ScStore {
     pub banned_token: Option<String>,
     /// Перед следующим входом стереть данные профиля окна входа.
     pub clear_on_login: bool,
+    /// Публичный client_id веб-клиента для гостевого режима (без входа).
+    pub guest_client_id: Option<String>,
 }
 
 pub struct SoundCloud {
     http: reqwest::Client,
     store: Mutex<ScStore>,
     token_lock: tokio::sync::Mutex<()>,
+    guest_lock: tokio::sync::Mutex<()>,
     expired: AtomicBool,
 }
 
@@ -220,7 +228,8 @@ pub fn track_from(v: &Value) -> Option<Track> {
         uploader,
         uploader_urn: user.and_then(|u| urn_of(u, "users")),
         album: v.get("publisher_metadata").and_then(|p| s(p, "album_title")),
-        duration_ms: u(v, "duration").or_else(|| u(v, "full_duration")).unwrap_or(0),
+        // у превью «duration» — длина 30-секундного отрывка, полная длина — в «full_duration»
+        duration_ms: u(v, "full_duration").filter(|d| *d > 0).or_else(|| u(v, "duration")).unwrap_or(0),
         artwork: s(v, "artwork_url").or_else(|| user.and_then(|u| s(u, "avatar_url"))),
         genre: s(v, "genre"),
         permalink: s(v, "permalink_url"),
@@ -278,7 +287,7 @@ fn page<T>(v: &Value, f: impl Fn(&Value) -> Option<T>) -> Page<T> {
     Page { items: items.iter().filter_map(f).collect(), next }
 }
 
-fn random_b64(n: usize) -> String {
+pub(crate) fn random_b64(n: usize) -> String {
     let mut buf = vec![0u8; n];
     if getrandom::fill(&mut buf).is_err() {
         // крайне маловероятно; подмешиваем время, чтобы не остаться с нулями
@@ -288,6 +297,33 @@ fn random_b64(n: usize) -> String {
         }
     }
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf)
+}
+
+/// `client_id:"<32 символа>"` в HTML или скрипте сайта.
+pub fn find_client_id(text: &str) -> Option<String> {
+    for (pos, _) in text.match_indices("client_id") {
+        let rest = text[pos + "client_id".len()..].trim_start();
+        let Some(rest) = rest.strip_prefix(':').or_else(|| rest.strip_prefix('=')) else { continue };
+        let Some(rest) = rest.trim_start().strip_prefix('"') else { continue };
+        let id: String = rest.chars().take_while(char::is_ascii_alphanumeric).collect();
+        if id.len() == 32 && rest[32..].starts_with('"') {
+            return Some(id);
+        }
+    }
+    None
+}
+
+/// Адреса скриптов приложения (`https://a-v2.sndcdn.com/assets/….js`) со страницы сайта.
+pub fn script_srcs(html: &str) -> Vec<String> {
+    html.split("<script")
+        .skip(1)
+        .filter_map(|tag| {
+            let tag = &tag[..tag.find('>')?];
+            let start = tag.find("src=\"")? + 5;
+            let src = &tag[start..start + tag[start..].find('"')?];
+            (src.starts_with("https://") && src.contains("sndcdn.com/") && src.ends_with(".js")).then(|| src.to_string())
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -303,7 +339,7 @@ impl SoundCloud {
         if store.redirect_uri.trim().is_empty() {
             store.redirect_uri = DEFAULT_REDIRECT.into();
         }
-        Self { http, store: Mutex::new(store), token_lock: tokio::sync::Mutex::new(()), expired: AtomicBool::new(false) }
+        Self { http, store: Mutex::new(store), token_lock: tokio::sync::Mutex::new(()), guest_lock: tokio::sync::Mutex::new(()), expired: AtomicBool::new(false) }
     }
 
     fn save(&self) {
@@ -313,9 +349,24 @@ impl SoundCloud {
         }
     }
 
-    /// Есть ли чем ходить в SoundCloud: веб-сессия или свои ключи API.
+    /// Можно ли пользоваться каталогом SoundCloud. Всегда да: без входа и без
+    /// ключей работает гостевой режим через API сайта.
     pub fn configured(&self) -> bool {
-        self.web().is_some() || self.has_dev_keys()
+        true
+    }
+
+    /// Ходить в API сайта (`api-v2`): с веб-сессией или гостем. Официальный API —
+    /// только когда указаны свои ключи и входа через сайт нет.
+    fn use_v2(&self) -> bool {
+        self.web().is_some() || !self.has_dev_keys()
+    }
+
+    /// Личные разделы (лайки, лента, свои плейлисты) без входа недоступны.
+    fn need_login(&self) -> Result<(), String> {
+        if self.use_v2() && self.web().is_none() {
+            return Err("Войдите в SoundCloud, чтобы видеть лайки, ленту и свои плейлисты".into());
+        }
+        Ok(())
     }
 
     pub fn has_dev_keys(&self) -> bool {
@@ -385,9 +436,11 @@ impl SoundCloud {
         }
     }
 
-    /// GET к API сайта от имени пользователя.
+    /// GET к API сайта: от имени пользователя, если он вошёл, иначе гостем.
     async fn v2_get(&self, path_or_url: &str, params: &[(&str, &str)]) -> Result<Value, String> {
-        let (token, client_id) = self.web().ok_or("SoundCloud не подключён — нажмите «Войти через SoundCloud»")?;
+        let Some((token, client_id)) = self.web() else {
+            return self.v2_guest_get(path_or_url, params).await;
+        };
         let url = v2_url(path_or_url, params, &client_id)?;
         let resp = self
             .http
@@ -402,12 +455,83 @@ impl SoundCloud {
                 self.expire_web(&token);
                 Err("Сессия SoundCloud устарела — войдите снова".into())
             }
+            s => Self::v2_result(s, resp).await,
+        }
+    }
+
+    async fn v2_result(status: u16, resp: reqwest::Response) -> Result<Value, String> {
+        match status {
             403 => Err("SoundCloud: доступ запрещён".into()),
             404 => Err("SoundCloud: не найдено".into()),
             429 => Err("SoundCloud: слишком много запросов, подождите немного".into()),
             s if !(200..300).contains(&s) => Err(format!("SoundCloud: HTTP {s}")),
             _ => resp.json().await.map_err(|e| format!("ответ SoundCloud: {e}")),
         }
+    }
+
+    /// Гостевой запрос без токена. client_id веб-клиента SoundCloud время от времени
+    /// меняет: на 401/403 берём свежий со страницы сайта и повторяем один раз.
+    async fn v2_guest_get(&self, path_or_url: &str, params: &[(&str, &str)]) -> Result<Value, String> {
+        for attempt in 0..2 {
+            let client_id = self.guest_client_id(attempt > 0).await?;
+            let url = v2_url(path_or_url, params, &client_id)?;
+            let resp = self
+                .http
+                .get(url)
+                .header(ACCEPT, "application/json; charset=utf-8")
+                .send()
+                .await
+                .map_err(|e| format!("сеть: {e}"))?;
+            let status = resp.status().as_u16();
+            if (status == 401 || status == 403) && attempt == 0 {
+                continue;
+            }
+            return Self::v2_result(status, resp).await;
+        }
+        Err("SoundCloud не принял гостевой запрос".into())
+    }
+
+    /// Публичный client_id веб-клиента: из кэша или из скриптов soundcloud.com.
+    async fn guest_client_id(&self, refresh: bool) -> Result<String, String> {
+        let _guard = self.guest_lock.lock().await;
+        let cached = self.store.lock().guest_client_id.clone();
+        if let Some(c) = cached.filter(|_| !refresh) {
+            return Ok(c);
+        }
+        let id = self.scrape_client_id().await?;
+        self.store.lock().guest_client_id = Some(id.clone());
+        self.save();
+        Ok(id)
+    }
+
+    async fn scrape_client_id(&self) -> Result<String, String> {
+        const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+        let fetch = |url: String| async move {
+            self.http
+                .get(&url)
+                .header(USER_AGENT, BROWSER_UA)
+                .timeout(Duration::from_secs(20))
+                .send()
+                .await
+                .and_then(|r| r.error_for_status())
+                .map_err(|e| format!("не удалось открыть soundcloud.com: {e}"))?
+                .text()
+                .await
+                .map_err(|e| format!("не удалось открыть soundcloud.com: {e}"))
+        };
+        let html = fetch("https://soundcloud.com/".into()).await?;
+        if let Some(id) = find_client_id(&html) {
+            return Ok(id);
+        }
+        // client_id лежит в одном из последних скриптов приложения
+        for src in script_srcs(&html).into_iter().rev() {
+            if let Ok(js) = fetch(src).await {
+                if let Some(id) = find_client_id(&js) {
+                    return Ok(id);
+                }
+            }
+        }
+        Err("не удалось получить публичный ключ SoundCloud — войдите в аккаунт или попробуйте позже".into())
     }
 
     async fn v2_tracks(&self, path: &str, params: &[(&str, &str)]) -> Result<Page<Track>, String> {
@@ -635,7 +759,7 @@ impl SoundCloud {
     }
 
     pub async fn search_tracks(&self, q: &str) -> Result<Page<Track>, String> {
-        if self.web_mode() {
+        if self.use_v2() {
             return self.v2_tracks("/search/tracks", &[("q", q), ("limit", "40"), ("linked_partitioning", "1")]).await;
         }
         let v = self.get(&Self::url("/tracks", &[("q", q), ("limit", "40"), ("linked_partitioning", "true"), ("access", "playable,preview")])).await?;
@@ -643,7 +767,7 @@ impl SoundCloud {
     }
 
     pub async fn search_playlists(&self, q: &str) -> Result<Page<PlaylistInfo>, String> {
-        if self.web_mode() {
+        if self.use_v2() {
             let v = self.v2_get("/search/playlists", &[("q", q), ("limit", "30"), ("linked_partitioning", "1")]).await?;
             return Ok(page(&v, playlist_from));
         }
@@ -652,7 +776,7 @@ impl SoundCloud {
     }
 
     pub async fn search_users(&self, q: &str) -> Result<Page<UserInfo>, String> {
-        if self.web_mode() {
+        if self.use_v2() {
             let v = self.v2_get("/search/users", &[("q", q), ("limit", "30"), ("linked_partitioning", "1")]).await?;
             return Ok(page(&v, user_from));
         }
@@ -661,7 +785,7 @@ impl SoundCloud {
     }
 
     pub async fn genre(&self, genre: &str) -> Result<Page<Track>, String> {
-        if self.web_mode() {
+        if self.use_v2() {
             return self.v2_genre(genre).await;
         }
         let v = self.get(&Self::url("/tracks", &[("genres", genre), ("limit", "40"), ("linked_partitioning", "true"), ("access", "playable")])).await?;
@@ -669,7 +793,7 @@ impl SoundCloud {
     }
 
     pub async fn related(&self, urn: &str) -> Result<Page<Track>, String> {
-        if self.web_mode() {
+        if self.use_v2() {
             return self.v2_tracks(&format!("/tracks/{}/related", sc_id(urn)), &[("limit", "30"), ("linked_partitioning", "1")]).await;
         }
         let v = self.get(&Self::url(&format!("/tracks/{urn}/related"), &[("limit", "30"), ("linked_partitioning", "true"), ("access", "playable")])).await?;
@@ -677,7 +801,7 @@ impl SoundCloud {
     }
 
     pub async fn user_tracks(&self, urn: &str) -> Result<Page<Track>, String> {
-        if self.web_mode() {
+        if self.use_v2() {
             return self.v2_tracks(&format!("/users/{}/tracks", sc_id(urn)), &[("limit", "50"), ("linked_partitioning", "1")]).await;
         }
         let v = self.get(&Self::url(&format!("/users/{urn}/tracks"), &[("limit", "50"), ("linked_partitioning", "true"), ("access", "playable,preview")])).await?;
@@ -685,7 +809,7 @@ impl SoundCloud {
     }
 
     pub async fn user_info(&self, urn: &str) -> Result<UserInfo, String> {
-        let v = if self.web_mode() {
+        let v = if self.use_v2() {
             self.v2_get(&format!("/users/{}", sc_id(urn)), &[]).await?
         } else {
             self.get(&Self::url(&format!("/users/{urn}"), &[])).await?
@@ -694,7 +818,7 @@ impl SoundCloud {
     }
 
     pub async fn playlist_tracks(&self, urn: &str) -> Result<Page<Track>, String> {
-        if self.web_mode() {
+        if self.use_v2() {
             return self.v2_playlist_tracks(urn).await;
         }
         let v = self.get(&Self::url(&format!("/playlists/{urn}/tracks"), &[("linked_partitioning", "true"), ("limit", "100"), ("access", "playable,preview")])).await?;
@@ -702,7 +826,8 @@ impl SoundCloud {
     }
 
     pub async fn likes(&self) -> Result<Page<Track>, String> {
-        if self.web_mode() {
+        self.need_login()?;
+        if self.use_v2() {
             let me = self.v2_me_id().await?;
             return self.v2_tracks(&format!("/users/{me}/track_likes"), &[("limit", "50"), ("linked_partitioning", "1")]).await;
         }
@@ -711,7 +836,8 @@ impl SoundCloud {
     }
 
     pub async fn my_playlists(&self) -> Result<Page<PlaylistInfo>, String> {
-        if self.web_mode() {
+        self.need_login()?;
+        if self.use_v2() {
             return self.v2_my_playlists().await;
         }
         let v = self.get(&Self::url("/me/playlists", &[("limit", "50"), ("linked_partitioning", "true"), ("show_tracks", "false")])).await?;
@@ -719,7 +845,8 @@ impl SoundCloud {
     }
 
     pub async fn feed(&self) -> Result<Page<Track>, String> {
-        if self.web_mode() {
+        self.need_login()?;
+        if self.use_v2() {
             return self.v2_tracks("/stream", &[("limit", "40"), ("linked_partitioning", "1")]).await;
         }
         let v = self.get(&Self::url("/me/feed/tracks", &[("limit", "50"), ("access", "playable,preview")])).await?;
@@ -728,7 +855,7 @@ impl SoundCloud {
 
     /// Следующая страница коллекции (`next_href`): ссылки API сайта приходят без client_id.
     async fn next_page(&self, next: &str) -> Result<Value, String> {
-        if next.starts_with(API_V2) && self.web_mode() {
+        if next.starts_with(API_V2) && self.use_v2() {
             return self.v2_get(next, &[]).await;
         }
         if !next.starts_with(&format!("{API}/")) {
@@ -752,7 +879,7 @@ impl SoundCloud {
     /// Выбор потока: AAC HLS (160/96) → MP3 HLS → прогрессивный MP3 → превью.
     /// Возвращает спецификацию и признак «это 30-секундное превью».
     pub async fn stream(&self, t: &Track, quality: StreamQuality) -> Result<(MediaSpec, bool), String> {
-        if self.web_mode() {
+        if self.use_v2() {
             return self.v2_stream(t, quality).await;
         }
         let urn = t.urn.as_deref().ok_or("у трека нет идентификатора SoundCloud")?;
@@ -820,7 +947,7 @@ impl SoundCloud {
         .map_err(|e| e.to_string())?;
         open::that(auth.as_str()).map_err(|e| format!("не удалось открыть браузер: {e}"))?;
 
-        let code = tokio::time::timeout(Duration::from_secs(300), wait_for_code(&listener, &state, redirect_url.path()))
+        let code = tokio::time::timeout(Duration::from_secs(300), wait_for_code(&listener, &state, redirect_url.path(), "SoundCloud"))
             .await
             .map_err(|_| "время ожидания входа истекло".to_string())??;
 
@@ -855,7 +982,9 @@ async fn respond(sock: &mut tokio::net::TcpStream, status: &str, body: &str) {
     let _ = sock.shutdown().await;
 }
 
-async fn wait_for_code(listener: &tokio::net::TcpListener, state: &str, path: &str) -> Result<String, String> {
+/// Принять перенаправление OAuth на локальном порту и вернуть код авторизации
+/// (общий для SoundCloud и Spotify; `service` — для текста ошибки).
+pub(crate) async fn wait_for_code(listener: &tokio::net::TcpListener, state: &str, path: &str, service: &str) -> Result<String, String> {
     loop {
         let (mut sock, _) = listener.accept().await.map_err(|e| e.to_string())?;
         let mut buf = vec![0u8; 8192];
@@ -876,7 +1005,7 @@ async fn wait_for_code(listener: &tokio::net::TcpListener, state: &str, path: &s
         let q: std::collections::HashMap<String, String> = url.query_pairs().into_owned().collect();
         if let Some(err) = q.get("error") {
             respond(&mut sock, "200 OK", PAGE_ERR).await;
-            return Err(format!("SoundCloud: {err}"));
+            return Err(format!("{service}: {err}"));
         }
         if q.get("state").map(String::as_str) != Some(state) {
             respond(&mut sock, "400 Bad Request", PAGE_ERR).await;
@@ -945,6 +1074,16 @@ mod tests {
             "user": {"kind": "user", "id": 77, "username": "artist"},
             "media": {"transcodings": []}
         })
+    }
+
+    #[test]
+    fn guest_client_id_scraping() {
+        let html = r#"<script crossorigin src="https://a-v2.sndcdn.com/assets/0-abc.js"></script>
+            <script>window.x=1</script><script crossorigin src="https://a-v2.sndcdn.com/assets/49-def.js"></script>"#;
+        assert_eq!(script_srcs(html), vec!["https://a-v2.sndcdn.com/assets/0-abc.js", "https://a-v2.sndcdn.com/assets/49-def.js"]);
+        let js = r#"foo({client_id:"short"}),bar({client_id: "aBcDeFgHiJkLmNoPqRsTuVwXyZ012345",env:"prod"})"#;
+        assert_eq!(find_client_id(js).as_deref(), Some("aBcDeFgHiJkLmNoPqRsTuVwXyZ012345"));
+        assert_eq!(find_client_id("client_id:\"aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789\""), None);
     }
 
     #[test]

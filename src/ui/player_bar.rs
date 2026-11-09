@@ -305,7 +305,7 @@ pub fn Progress() -> Element {
     rsx! {
         div { class: "progress-wrap", "data-el": "progress",
             span { class: "time", "{fmt_time(pos)}" }
-            div { class: if pstate == PlaybackState::Buffering { "progress buffering" } else { "progress" },
+            div { class: if pstate == PlaybackState::Buffering { "progress buffering" } else { "progress" }, style: "--pp: {pct}%;",
                 div { class: "pr-buf", style: "width: {buf_pct}%;" }
                 div { class: "pr-fill", style: "width: {pct}%;" }
                 input {

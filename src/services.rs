@@ -1,4 +1,4 @@
-//! Глобальные сервисы: tokio-рантайм, HTTP-клиент, SoundCloud, тексты, медиа и плеер.
+//! Глобальные сервисы: tokio-рантайм, HTTP-клиент, SoundCloud, YouTube, тексты, медиа и плеер.
 //! Создаются один раз в `main` до запуска окна.
 
 use crate::audio::Player;
@@ -8,6 +8,7 @@ use crate::settings::Settings;
 use crate::soundcloud::SoundCloud;
 use crate::spotify::Spotify;
 use crate::yandex::YandexMusic;
+use crate::youtube::YouTube;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -15,6 +16,7 @@ pub struct Services {
     pub rt: tokio::runtime::Handle,
     pub sc: SoundCloud,
     pub yandex: YandexMusic,
+    pub yt: YouTube,
     pub spotify: Spotify,
     pub lyrics: LyricsClient,
     pub media: Media,
@@ -38,6 +40,7 @@ pub fn init(rt: tokio::runtime::Handle, settings: &Settings) -> &'static Service
         Services {
             sc: SoundCloud::new(http.clone()),
             yandex: YandexMusic::new(http.clone()),
+            yt: YouTube::new(http.clone()),
             spotify: Spotify::new(http.clone()),
             lyrics: LyricsClient::new(http.clone()),
             media,
