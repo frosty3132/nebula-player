@@ -11,9 +11,18 @@ use dioxus::desktop::tao::window::ResizeDirection;
 use dioxus::desktop::window;
 use dioxus::prelude::*;
 
-/// Сохранить размер/положение окна и состояние, затем закрыть — сразу, без
-/// анимации ухода.
+/// Крестик: с настройкой «Сворачивать в трей» окно прячется к часам у
+/// панели задач (музыка играет дальше), иначе приложение закрывается.
 pub fn close_app(state: AppState) {
+    if state.settings.peek().close_to_tray {
+        hide_to_tray(state);
+    } else {
+        quit_app(state);
+    }
+}
+
+/// Запомнить размер и положение окна и сохранить всё на диск.
+fn save_state(state: AppState) {
     let mut st = state;
     {
         let w = window();
@@ -33,6 +42,23 @@ pub fn close_app(state: AppState) {
     st.settings.peek().save();
     st.library.peek().save();
     save_session(state);
+}
+
+/// Спрятать окно в трей. Состояние сохраняем сразу — на случай, если
+/// Windows завершит приложение, пока оно в фоне.
+pub fn hide_to_tray(state: AppState) {
+    save_state(state);
+    window().set_visible(false);
+}
+
+/// Закрыть приложение совсем — сразу, без анимации ухода.
+pub fn quit_app(state: AppState) {
+    save_state(state);
+    // островок — отдельное окно: без него приложение не завершилось бы
+    super::desk_island::close_now();
+    super::tray_menu::close();
+    // с «трей вместо закрытия» окно лишь пряталось бы
+    window().set_close_behavior(dioxus::desktop::WindowCloseBehaviour::WindowCloses);
     window().close();
 }
 
@@ -61,6 +87,10 @@ pub fn set_window_transitions(enabled: bool) {
 /// окно прозрачное, скругление рисует сама страница.
 pub fn style_window_frame() {
     set_window_transitions(false);
+    // при сворачивании Windows дорисовывала поверх окна классический заголовок
+    // «как в Windows 7», и он мелькал в анимации разворачивания
+    #[cfg(windows)]
+    super::desk_island::no_classic_frame(&window().window, false);
     #[cfg(windows)]
     {
         use dioxus::desktop::tao::platform::windows::WindowExtWindows;
@@ -103,9 +133,100 @@ pub fn TitleBar() -> Element {
     let edit = *st.edit_mode.read();
     // «Hidden» из старых тем показываем так же, как верхнюю панель
     let top_dock = matches!(layout.sidebar, SidebarPos::Top | SidebarPos::Hidden);
-    let collapsed = st.settings.read().player_collapsed;
+    // при островке на рабочем столе встроенный островок в заголовке не нужен
+    let collapsed = { let s = st.settings.read(); s.player_collapsed && !s.island_desktop };
 
     let mut max_sig = maximized;
+    let win_btns = rsx! {
+        div { class: "win-btns",
+            button {
+                class: "win-btn",
+                title: "Свернуть",
+                onmousedown: move |e| e.stop_propagation(),
+                onclick: move |_| minimize_app(st),
+                span { class: "wb-min" }
+            }
+            button {
+                class: "win-btn",
+                title: if *maximized.read() { "Восстановить" } else { "Развернуть" },
+                onmousedown: move |e| e.stop_propagation(),
+                onclick: move |_| {
+                    toggle_maximized_quiet();
+                    max_sig.set(window().is_maximized());
+                },
+                span { class: if *maximized.read() { "wb-restore" } else { "wb-max" } }
+            }
+            button {
+                class: "win-btn close",
+                title: "Закрыть",
+                onmousedown: move |e| e.stop_propagation(),
+                onclick: move |_| close_app(st),
+                Icon { name: "close", size: 16 }
+            }
+        }
+    };
+    // стиль «Сцена»: слева название и часы, по центру плашка трека, справа
+    // значки разделов, переключатель «Медиатека / Сцена» и кнопки окна
+    if layout.stage_style {
+        return rsx! {
+            header {
+                class: "titlebar stage-titlebar",
+                "data-el": "titlebar",
+                onmousedown: move |e| {
+                    if e.trigger_button() == Some(dioxus::html::input_data::MouseButton::Primary) {
+                        window().drag();
+                    }
+                },
+                ondoubleclick: move |_| {
+                    toggle_maximized_quiet();
+                    max_sig.set(window().is_maximized());
+                },
+                div { class: "tb-left stage-side",
+                    super::stage::BrandClock {}
+                    div { class: "tb-nav",
+                        IconBtn { icon: "back", title: "Назад", size: 18, class: if can_back { "" } else { "dim" }, onclick: move |_| go_back(st) }
+                        IconBtn { icon: "forward", title: "Вперёд", size: 18, class: if can_fwd { "" } else { "dim" }, onclick: move |_| go_forward(st) }
+                    }
+                    // значки разделов — слева, сразу за названием и стрелками
+                    if top_dock {
+                        Dock { nav: layout.nav.clone(), route: route.clone() }
+                    }
+                }
+                div { class: "stage-center",
+                    if collapsed {
+                        Island {}
+                    } else {
+                        super::stage::NowPill { open_stage: true }
+                    }
+                }
+                div { class: "tb-right stage-side end",
+                    div { class: "stage-switch", onmousedown: move |e| e.stop_propagation(), ondoubleclick: move |e| e.stop_propagation(),
+                        button { class: "stage-switch-btn active", "Медиатека" }
+                        button { class: "stage-switch-btn", title: "Сцена: обложка, плеер и текст на весь экран (F)",
+                            onclick: move |_| { let mut f = st.fullscreen; f.set(true); },
+                            "Сцена"
+                        }
+                    }
+                    IconBtn {
+                        icon: "brush",
+                        title: "Режим редактирования интерфейса (Ctrl+E)",
+                        size: 17,
+                        active: edit,
+                        class: "tb-edit",
+                        onclick: move |_| {
+                            let mut s = st;
+                            let v = !*s.edit_mode.peek();
+                            s.edit_mode.set(v);
+                            if !v {
+                                s.selected_el.set(None);
+                            }
+                        },
+                    }
+                    {win_btns}
+                }
+            }
+        };
+    }
     rsx! {
         header {
             class: "titlebar",
@@ -164,32 +285,7 @@ pub fn TitleBar() -> Element {
                         }
                     },
                 }
-                div { class: "win-btns",
-                    button {
-                        class: "win-btn",
-                        title: "Свернуть",
-                        onmousedown: move |e| e.stop_propagation(),
-                        onclick: move |_| minimize_app(st),
-                        span { class: "wb-min" }
-                    }
-                    button {
-                        class: "win-btn",
-                        title: if *maximized.read() { "Восстановить" } else { "Развернуть" },
-                        onmousedown: move |e| e.stop_propagation(),
-                        onclick: move |_| {
-                            toggle_maximized_quiet();
-                            max_sig.set(window().is_maximized());
-                        },
-                        span { class: if *maximized.read() { "wb-restore" } else { "wb-max" } }
-                    }
-                    button {
-                        class: "win-btn close",
-                        title: "Закрыть",
-                        onmousedown: move |e| e.stop_propagation(),
-                        onclick: move |_| close_app(st),
-                        Icon { name: "close", size: 16 }
-                    }
-                }
+                {win_btns}
             }
         }
     }

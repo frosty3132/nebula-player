@@ -97,7 +97,7 @@ fn is_ts(d: &[u8]) -> bool {
     d.first() == Some(&0x47) && (d.len() < 189 || d[188] == 0x47)
 }
 
-async fn fetch_bytes(http: &reqwest::Client, url: &str, auth: &Option<String>, range: Option<hls::ByteRange>) -> Result<Vec<u8>, String> {
+pub(crate) async fn fetch_bytes(http: &reqwest::Client, url: &str, auth: &Option<String>, range: Option<hls::ByteRange>) -> Result<Vec<u8>, String> {
     let mut last = String::new();
     for attempt in 0..4u64 {
         if attempt > 0 {

@@ -122,6 +122,8 @@ pub struct Settings {
     pub lyrics_translit: bool,
     // ─── интерфейс ───
     pub theme: String,
+    /// Один раз включена тема «Монохром» (переход на стиль «Сцена»).
+    pub style_mono_applied: bool,
     pub ui_scale: f32,
     pub animations: bool,
     pub anim_speed: f32,
@@ -155,6 +157,18 @@ pub struct Settings {
     pub queue_open: bool,
     /// Нижний плеер свёрнут в островок в заголовке окна.
     pub player_collapsed: bool,
+    /// Свёрнутый плеер — островок на рабочем столе поверх всех окон Windows.
+    pub island_desktop: bool,
+    /// Крестик прячет Nebula в трей (музыка играет дальше), а не закрывает.
+    pub close_to_tray: bool,
+    /// Город для погоды в островке (пусто — погода не показывается).
+    pub weather_city: String,
+    /// Папка для скачанных треков (пусто — системная «Загрузки»).
+    pub download_dir: Option<String>,
+    /// Спрашивать, куда сохранить, при каждом скачивании.
+    pub download_ask: bool,
+    /// Оформление часов в «Сцене»: ring, digital, analog, flip, bar.
+    pub clock_style: String,
     pub sidebar_collapsed: bool,
 }
 
@@ -199,6 +213,7 @@ impl Default for Settings {
             lyrics_autoscroll: true,
             lyrics_translit: false,
             theme: "black".into(),
+            style_mono_applied: false,
             ui_scale: 1.0,
             animations: true,
             anim_speed: 1.0,
@@ -223,6 +238,12 @@ impl Default for Settings {
             lyrics_dismissed: false,
             queue_open: false,
             player_collapsed: false,
+            island_desktop: true,
+            close_to_tray: true,
+            weather_city: String::new(),
+            download_dir: None,
+            download_ask: true,
+            clock_style: "ring".into(),
             sidebar_collapsed: false,
         }
     }

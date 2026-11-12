@@ -5,6 +5,9 @@
 mod actions;
 mod background;
 mod chrome;
+mod desk_island;
+mod download;
+mod island_sys;
 mod icons;
 mod import_dialog;
 mod lyrics_view;
@@ -13,12 +16,14 @@ mod pages;
 mod player_bar;
 mod sc_account;
 mod spotify_card;
+mod stage;
 mod settings_index;
 mod settings_page;
 mod state;
 mod theme_editor;
 mod tracks;
 mod transition;
+mod tray_menu;
 mod widgets;
 
 use crate::audio::{PlaybackState, PlayerEvent};
@@ -30,7 +35,7 @@ use crate::theme::{self, PlayerPos, Side, SidebarPos, ELEMENTS};
 use actions::*;
 use background::Background;
 use chrome::{style_window_frame, ResizeHandles, Sidebar, TitleBar};
-use dioxus::desktop::{use_asset_handler, use_global_shortcut, use_wry_event_handler, window, HotKeyState};
+use dioxus::desktop::{use_asset_handler, use_global_shortcut, use_tray_icon_event_handler, use_wry_event_handler, window, HotKeyState};
 use dioxus::prelude::*;
 use lyrics_view::{FullscreenHost, LyricsHost};
 use overlays::{ContextMenu, EditHint, ModalHost, QueuePanel, Toasts};
@@ -361,7 +366,7 @@ fn handle_key(st: AppState, m: JsMsg) {
             w.set_fullscreen(!fs);
         }
         ("Escape", _) => {
-            let (mut menu, mut modal, mut sel, mut edit, mut fs, mut eq) = (st.menu, st.modal, st.selected_el, st.edit_mode, st.fullscreen, st.eq_open);
+            let (mut menu, mut modal, mut sel, mut edit, mut fs, eq) = (st.menu, st.modal, st.selected_el, st.edit_mode, st.fullscreen, st.eq_open);
             if menu.peek().is_some() {
                 menu.set(None);
             } else if modal.peek().is_some() {
@@ -371,7 +376,7 @@ fn handle_key(st: AppState, m: JsMsg) {
             } else if *edit.peek() {
                 edit.set(false);
             } else if *eq.peek() {
-                eq.set(false);
+                player_bar::set_eq_open(st, false);
             } else if *fs.peek() {
                 if window().fullscreen().is_some() {
                     window().set_fullscreen(false);
@@ -444,6 +449,22 @@ pub fn sc_account(st: AppState) -> Option<String> {
     st.sc_user.peek().as_ref().map(|u| u.urn.clone()).filter(|u| !u.is_empty())
 }
 
+/// Вернуть окно из трея (или из островка, если он открыт).
+fn show_from_tray(st: AppState) {
+    let island = {
+        let s = st.settings.peek();
+        s.player_collapsed && s.island_desktop
+    };
+    if island {
+        desk_island::fly_in(st);
+        return;
+    }
+    let w = window();
+    w.set_visible(true);
+    w.set_minimized(false);
+    w.set_focus();
+}
+
 fn apply_window_effect(effect: WindowEffect, dark: bool) {
     let w = window();
     let win: &dioxus::desktop::tao::window::Window = &w.window;
@@ -483,7 +504,19 @@ fn page_view(route: Route) -> Element {
 #[component]
 pub fn App() -> Element {
     let mut st = use_context_provider(|| {
-        let settings = Settings::load();
+        let mut settings = Settings::load();
+        // переход на новый стиль: один раз включаем тему «Монохром» (в «Темах»
+        // можно вернуть прежнюю — она никуда не делась)
+        // запуск Nebula — это просьба показать окно: островок с прошлого раза
+        // не открываем (иначе приложение «пряталось» бы с самого старта)
+        if settings.player_collapsed && settings.island_desktop {
+            settings.player_collapsed = false;
+        }
+        if !settings.style_mono_applied {
+            settings.style_mono_applied = true;
+            settings.theme = "mono".into();
+            settings.save();
+        }
         let themes = theme::load_all();
         let theme = themes.iter().find(|t| t.id == settings.theme).cloned().unwrap_or_else(|| themes[0].clone());
         let local = LocalIndex::load().tracks();
@@ -579,9 +612,14 @@ pub fn App() -> Element {
     let _ = use_global_shortcut("MediaStop", move |s| if s == HotKeyState::Pressed { svc().player.pause() });
 
     // ── события окна: развёрнуто ли, закрытие через Alt+F4 ──
+    // (события приходят от всех окон, а островок — отдельное окно)
+    let main_id = use_hook(|| window().id());
     use_wry_event_handler(move |event, _| {
         use dioxus::desktop::tao::event::{Event, WindowEvent};
-        if let Event::WindowEvent { event, .. } = event {
+        if let Event::WindowEvent { event, window_id, .. } = event {
+            if *window_id != main_id {
+                return;
+            }
             match event {
                 WindowEvent::Resized(_) => {
                     let m = window().is_maximized();
@@ -609,6 +647,12 @@ pub fn App() -> Element {
                     }
                 }
                 WindowEvent::CloseRequested => {
+                    // с «трей вместо закрытия» Alt+F4 лишь прячет окно — островок не трогаем
+                    if !st.settings.peek().close_to_tray {
+                        // приложение закрывается — служебные окна тоже, иначе оно не завершится
+                        desk_island::close_now();
+                        tray_menu::close();
+                    }
                     st.settings.peek().save();
                     st.library.peek().save();
                     save_session(st);
@@ -809,6 +853,225 @@ pub fn App() -> Element {
     let on_top = use_memo(move || st.settings.read().always_on_top);
     use_effect(move || window().set_always_on_top(on_top()));
     use_hook(style_window_frame);
+    // островок на рабочем столе: сводка для него и команды от него
+    use_future(move || async move {
+        use desk_island::{IslandCmd, IslandSnap};
+        loop {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            if desk_island::is_open() {
+                let now = st.now.peek().clone();
+                // позиция прямо из плеера и момент замера: островок сам ведёт
+                // время дальше, и текст идёт точно в такт
+                let playing_now = matches!(*st.pstate.peek(), PlaybackState::Playing | PlaybackState::Buffering);
+                let pos = if playing_now { svc().player.snapshot().position_ms } else { *st.position.peek() };
+                let pos_at = Some(Instant::now());
+                // синхронный текст целиком (отправляется, только когда он сменился)
+                {
+                    let off = *st.lyrics_offset.peek() as i64 + st.settings.peek().lyrics_offset_ms as i64;
+                    let tid = now.as_ref().map(|t| t.id.as_str()).unwrap_or("");
+                    match &*st.lyrics.peek() {
+                        LyricsState::Found(l) if l.is_synced() => {
+                            let key = format!("{tid}:{}:{off}", l.synced.len());
+                            desk_island::publish_lyrics(&key, || (l.synced.iter().map(|x| (x.time_ms, x.text.trim().to_string())).collect(), off));
+                        }
+                        _ => desk_island::publish_lyrics(&format!("{tid}:none"), || (Vec::new(), 0)),
+                    }
+                }
+                let lyric = None;
+                let liked = now.as_ref().is_some_and(|t| st.library.peek().is_favorite(&t.id));
+                let (volume, max_volume, vol_step, muted) = {
+                    let s = st.settings.peek();
+                    (s.volume, s.max_volume, s.volume_step, s.muted)
+                };
+                let next = {
+                    let q = st.queue.peek();
+                    q.index.and_then(|i| q.tracks.get(i + 1)).map(|t| (t.title.clone(), t.artist.clone()))
+                };
+                {
+                    let lib = st.library.peek();
+                    let key = format!("{}:{}", lib.history.len(), lib.history.first().map(|x| x.id.as_str()).unwrap_or(""));
+                    desk_island::publish_recent(&key, || lib.history.iter().take(12).cloned().collect());
+                }
+                desk_island::publish(IslandSnap {
+                    has_track: now.is_some(),
+                    track_id: now.as_ref().map(|t| t.id.clone()).unwrap_or_default(),
+                    title: now.as_ref().map(|t| t.title.clone()).unwrap_or_default(),
+                    artist: now.as_ref().map(|t| t.artist.clone()).unwrap_or_default(),
+                    art: now.as_ref().and_then(|t| t.art(crate::model::ArtSize::Medium)),
+                    playing: playing_now,
+                    pos_ms: pos,
+                    pos_at,
+                    dur_ms: *st.duration.peek(),
+                    lyric,
+                    liked,
+                    volume,
+                    max_volume,
+                    vol_step,
+                    muted,
+                    accent: st.accent.peek().clone(),
+                    next,
+                    weather_city: st.settings.peek().weather_city.clone(),
+                    queue_left: {
+                        let q = st.queue.peek();
+                        q.index.map(|i| q.tracks.len().saturating_sub(i + 1)).unwrap_or(0)
+                    },
+                    device: st.device.peek().clone(),
+                    eq_enabled: st.settings.peek().eq_enabled,
+                    eq_bands: st.settings.peek().eq_bands,
+                    eq_preset: st.settings.peek().eq_preset.clone(),
+                });
+            }
+            for cmd in desk_island::take_commands() {
+                match cmd {
+                    IslandCmd::TogglePlay => toggle_play(st),
+                    IslandCmd::Next => next(st, true),
+                    IslandCmd::Prev => prev(st),
+                    IslandCmd::Seek(ms) => seek(st, ms),
+                    IslandCmd::Like => {
+                        if let Some(t) = st.now.peek().clone() {
+                            toggle_like(st, &t);
+                        }
+                    }
+                    IslandCmd::VolumeStep(up) => {
+                        let (cur, step, muted) = {
+                            let s = st.settings.peek();
+                            (s.volume, s.volume_step, s.muted)
+                        };
+                        let base = if muted { 0.0 } else { cur };
+                        set_volume(st, base + if up { step } else { -step });
+                    }
+                    IslandCmd::SetVolume(f) => {
+                        let max = st.settings.peek().max_volume;
+                        set_volume(st, f * max);
+                    }
+                    IslandCmd::Mute => toggle_mute(st),
+                    IslandCmd::WantCorpus => {
+                        // мгновенный поиск островка: очередь, избранное, своя музыка, история
+                        let lib = st.library.peek();
+                        let queue = st.queue.peek();
+                        let local = st.local.peek();
+                        let mut seen = std::collections::HashSet::new();
+                        let mut tracks = Vec::new();
+                        for t in queue.tracks.iter().chain(lib.favorites.iter()).chain(local.iter()).chain(lib.history.iter()) {
+                            if tracks.len() >= 6000 {
+                                break;
+                            }
+                            if seen.insert(t.id.as_str()) {
+                                tracks.push(t.clone());
+                            }
+                        }
+                        let recent = lib.recent_searches.iter().take(8).cloned().collect();
+                        desk_island::publish_corpus(desk_island::Corpus { tracks, recent });
+                    }
+                    IslandCmd::WantPlaylists => {
+                        use desk_island::PlItem;
+                        let lib = st.library.peek();
+                        let mut v = Vec::new();
+                        if !lib.favorites.is_empty() {
+                            v.push(PlItem { id: "fav".into(), name: "Избранное".into(), icon: "heart", tracks: lib.favorites.clone() });
+                        }
+                        for p in &lib.playlists {
+                            v.push(PlItem { id: format!("pl:{}", p.id), name: p.name.clone(), icon: "playlist", tracks: p.tracks.clone() });
+                        }
+                        if !lib.history.is_empty() {
+                            v.push(PlItem { id: "hist".into(), name: "Недавно слушали".into(), icon: "history", tracks: lib.history.iter().take(100).cloned().collect() });
+                        }
+                        let local = st.local.peek();
+                        if !local.is_empty() {
+                            v.push(PlItem { id: "local".into(), name: "Моя музыка".into(), icon: "folder", tracks: local.iter().take(3000).cloned().collect() });
+                        }
+                        desk_island::publish_playlists(v);
+                    }
+                    IslandCmd::Play(tracks, i) => play_list(st, tracks, i, "Островок · поиск"),
+                    IslandCmd::EqEnabled(on) => st.settings.write().eq_enabled = on,
+                    IslandCmd::EqPreset(id) => {
+                        if let Some((pid, _, vals)) = crate::settings::EQ_PRESETS.iter().find(|(p, _, _)| *p == id) {
+                            let mut w = st.settings.write();
+                            w.eq_bands = *vals;
+                            w.eq_preset = pid.to_string();
+                            w.eq_enabled = true;
+                        }
+                    }
+                    IslandCmd::EqBand(i, v) => {
+                        if i < 10 {
+                            let mut w = st.settings.write();
+                            w.eq_bands[i] = v.clamp(-12.0, 12.0);
+                            w.eq_preset = "custom".into();
+                            w.eq_enabled = true;
+                        }
+                    }
+                    IslandCmd::OpenApp => desk_island::fly_in(st),
+                }
+            }
+        }
+    });
+    // островок открыт, пока плеер свёрнут (если он включён в настройках)
+    let desk_island_on = use_memo(move || {
+        let s = st.settings.read();
+        s.player_collapsed && s.island_desktop
+    });
+    use_effect(move || {
+        if desk_island_on() {
+            desk_island::open(Duration::ZERO);
+        } else {
+            desk_island::close();
+        }
+    });
+    // ── значок в трее: вернуть окно, пауза, треки, выход ──
+    // ── значок в трее: левый щелчок возвращает окно, правый — своё меню ──
+    let tray = use_hook(|| {
+        use dioxus::desktop::trayicon::{Icon, TrayIconBuilder};
+        let (rgba, w, h) = crate::app_icon_rgba();
+        let mut b = TrayIconBuilder::new().with_tooltip("Nebula");
+        if let Ok(icon) = Icon::from_rgba(rgba, w, h) {
+            b = b.with_icon(icon);
+        }
+        b.build().ok()
+    });
+    // меню рисуем сами (tray_menu): системное почти не настраивается. Окно
+    // создаём после первой отрисовки — новое дерево Dioxus посреди отрисовки
+    // главного окна сбивало его, и приложение закрывалось
+    use_effect(|| tray_menu::init());
+    use_effect(move || {
+        // значок виден, пока крестик прячет окно в трей; Alt+F4 ведёт себя так же
+        let on = st.settings.read().close_to_tray;
+        if let Some(t) = tray.as_ref() {
+            let _ = t.set_visible(on);
+        }
+        window().set_close_behavior(if on { dioxus::desktop::WindowCloseBehaviour::WindowHides } else { dioxus::desktop::WindowCloseBehaviour::WindowCloses });
+    });
+    use_tray_icon_event_handler(move |e| {
+        use dioxus::desktop::trayicon::{MouseButton, MouseButtonState, TrayIconEvent};
+        if let TrayIconEvent::Click { button, button_state: MouseButtonState::Up, position, .. } = e {
+            match button {
+                MouseButton::Left => show_from_tray(st),
+                MouseButton::Right => tray_menu::show_at(position.x, position.y),
+                _ => {}
+            }
+        }
+    });
+    // сводка для меню трея и его команды
+    use_future(move || async move {
+        use tray_menu::{MenuSnap, TrayCmd};
+        loop {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            {
+                tray_menu::publish(MenuSnap {
+                    playing: matches!(*st.pstate.peek(), PlaybackState::Playing | PlaybackState::Buffering),
+                    title: st.now.peek().as_ref().map(|t| format!("{} — {}", t.title, t.artist)).unwrap_or_default(),
+                });
+            }
+            for c in tray_menu::take_commands() {
+                match c {
+                    TrayCmd::Open => show_from_tray(st),
+                    TrayCmd::TogglePlay => toggle_play(st),
+                    TrayCmd::Next => next(st, true),
+                    TrayCmd::Prev => prev(st),
+                    TrayCmd::Quit => chrome::quit_app(st),
+                }
+            }
+        }
+    });
     // первый вход в аккаунт SoundCloud: время, наслушанное без входа, переходит к нему
     use_effect(move || {
         let Some(urn) = st.sc_user.read().as_ref().map(|u| u.urn.clone()).filter(|u| !u.is_empty()) else { return };
@@ -905,6 +1168,7 @@ pub fn App() -> Element {
         if player_collapsed { "player-collapsed" } else { "" },
         if st.theme.read().glass.liquid { "glass-liquid" } else { "" },
         if layout.player_md3 { "md3" } else { "" },
+        if layout.stage_style { "stage-style" } else { "" },
         if s.fisheye && s.animations && !s.low_power { "fisheye" } else { "" },
         if matches!(pstate, PlaybackState::Playing | PlaybackState::Buffering) { "is-playing" } else { "is-paused" },
     ]
@@ -980,6 +1244,7 @@ pub fn App() -> Element {
                 EqPanel {}
             }
             ContextMenu {}
+            download::DownloadDialog {}
             ModalHost {}
             Toasts {}
             if *st.edit_mode.read() {

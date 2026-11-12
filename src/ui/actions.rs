@@ -197,6 +197,11 @@ pub fn start_current(state: AppState, start_ms: u64, autoplay: bool) {
     });
 }
 
+/// Поток трека (тот же, что для воспроизведения) — для скачивания.
+pub async fn resolve_stream(state: AppState, track: &Track) -> Result<(MediaSpec, bool), String> {
+    resolve(state, track).await
+}
+
 async fn resolve(state: AppState, track: &Track) -> Result<(MediaSpec, bool), String> {
     if let Some(p) = &track.path {
         return Ok((MediaSpec::File(p.into()), false));
@@ -436,6 +441,12 @@ pub fn toggle_mute(state: AppState) {
 pub fn set_player_collapsed(state: AppState, collapsed: bool) {
     let mut st = state;
     if st.settings.peek().player_collapsed == collapsed || *st.player_switching.peek() {
+        return;
+    }
+    // с островком на рабочем столе главное окно стекает каплей в островок и
+    // прячется совсем — управлять музыкой можно с островка поверх всех окон
+    if collapsed && st.settings.peek().island_desktop {
+        super::desk_island::fly_out(state);
         return;
     }
     let (animate, k) = {

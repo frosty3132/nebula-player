@@ -4,14 +4,13 @@
 
 use super::actions::*;
 use super::icons::Icon;
-use super::player_bar::{Controls, Cover, Progress, Volume};
+
 use super::state::*;
 use super::widgets::{IconBtn, Spinner};
 use crate::lyrics::{guess_artist_title, Lyrics};
-use crate::model::{fmt_time, ArtSize};
+use crate::model::fmt_time;
 use crate::services::svc;
 use crate::settings::LyricsAlign;
-use dioxus::desktop::window;
 use dioxus::prelude::*;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -47,6 +46,26 @@ const LYRICS_SCROLL_JS: &str = r#"(() => {
   });
 })()"#;
 
+/// Пастельные цвета слов на сцене.
+const WORD_COLORS: [&str; 8] = ["#93c5fd", "#c4b5fd", "#f9a8d4", "#fdba74", "#86efac", "#fde68a", "#a5f3fc", "#fca5a5"];
+
+/// Слова строки с моментом, когда каждое загорается (мс относительно «сейчас»:
+/// отрицательное — уже горит), и его цветом. Момент — по доле символов до слова.
+fn word_timings(text: &str, dur: u64, elapsed: i64, line: usize) -> Vec<(String, i64, &'static str)> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let total: usize = words.iter().map(|w| w.chars().count() + 1).sum::<usize>().max(1);
+    let mut acc = 0usize;
+    words
+        .iter()
+        .enumerate()
+        .map(|(wi, w)| {
+            let start = (dur as usize * acc / total) as i64;
+            acc += w.chars().count() + 1;
+            (w.to_string(), start - elapsed, WORD_COLORS[(line * 3 + wi) % WORD_COLORS.len()])
+        })
+        .collect()
+}
+
 #[component]
 fn LyricsBody(prefix: String, #[props(default)] big: bool) -> Element {
     let st = app_state();
@@ -81,6 +100,8 @@ fn LyricsBody(prefix: String, #[props(default)] big: bool) -> Element {
     });
 
     let state = st.lyrics.read().clone();
+    // пословная подсветка: на сцене всегда, в боковой панели — в стиле «Сцена»
+    let words = big || st.theme.read().layout.stage_style;
     let align_class = match align {
         LyricsAlign::Left => "al-left",
         LyricsAlign::Center => "al-center",
@@ -140,7 +161,14 @@ fn LyricsBody(prefix: String, #[props(default)] big: bool) -> Element {
                                     "data-el": if is_active { "lyrics_active" } else { "lyrics_line" },
                                     style: "--d: {dist};",
                                     onclick: move |_| seek(st, seek_to),
-                                    if is_active && karaoke {
+                                    if is_active && karaoke && words {
+                                        // слова загораются по очереди, каждое своим цветом; момент —
+                                        // по доле символов строки (у LRC нет времени отдельных слов)
+                                        for (wi , (w , delay , color)) in word_timings(&text, dur, elapsed, i).into_iter().enumerate() {
+                                            span { key: "{wi}", class: "ly-w", style: "--wc: {color}; --wl: {delay}ms; --wi: {wi};", "{w}" }
+                                            " "
+                                        }
+                                    } else if is_active && karaoke {
                                         span { class: "ly-k", "data-text": "{text}", style: "animation-duration: {dur}ms; animation-delay: -{elapsed}ms;", "{text}" }
                                     } else {
                                         "{text}"
@@ -305,59 +333,49 @@ pub fn FullscreenHost() -> Element {
     rsx! { FullscreenLyrics { leaving: *leaving.read() } }
 }
 
+/// Полноэкранный режим — «сцена»: слева карточки (обложка, плеер, виджеты),
+/// справа крупный текст, где слова текущей строки загораются по очереди.
 #[component]
 pub fn FullscreenLyrics(leaving: bool) -> Element {
+    use super::stage::{StageClock, StageCover, StagePlayer, StageTop, StageWidgets};
     let st = app_state();
-    let now = st.now.read().clone();
-    let art = now.as_ref().and_then(|t| t.art(ArtSize::Large));
-    let order = st.theme.read().layout.controls.clone();
-    let lv = if st.settings.read().beat_glow { (*st.level.read() * 3.2).min(1.0) } else { 0.0 };
-    let mut win_fs = use_signal(|| false);
+    let lyr = st.lyrics.read().clone();
+    // название трека — крупным прозрачным «водяным знаком» за текстом
+    let mark = st.now.read().as_ref().map(|t| t.title.clone()).unwrap_or_default();
+    let (sync_label, synced) = match &lyr {
+        LyricsState::Found(l) if l.is_synced() => ("Синхронизировано", true),
+        LyricsState::Found(_) => ("Без синхронизации", false),
+        LyricsState::Loading => ("Ищу текст…", false),
+        _ => ("Нет текста", false),
+    };
     rsx! {
-        div { class: if leaving { "fs-lyrics leaving" } else { "fs-lyrics" }, "data-el": "lyrics_full",
-            if let Some(a) = art.clone() {
-                div { class: "fs-bg", style: "background-image: url('{a}');" }
-            }
-            div { class: "fs-veil" }
-            div { class: "fs-top",
-                div { class: "flex1" }
-                OffsetControls {}
-                IconBtn { icon: "search", title: "Найти текст вручную", onclick: move |_| { let mut m = st.modal; m.set(Some(Modal::LyricsSearch)); } }
-                IconBtn {
-                    icon: if *win_fs.read() { "fullscreen_exit" } else { "fullscreen" },
-                    title: "Полноэкранное окно (F11)",
-                    onclick: move |_| {
-                        let v = !*win_fs.peek();
-                        window().set_fullscreen(v);
-                        win_fs.set(v);
-                    },
+        div { class: if leaving { "fs-lyrics stage leaving" } else { "fs-lyrics stage" }, "data-el": "lyrics_full",
+            // медленное сияние цвета обложки за всей сценой
+            div { class: "stage-aurora", "aria-hidden": "true", i {} i {} i {} }
+            StageTop {}
+            div { class: "stage-body",
+                div { class: "stage-left",
+                    StageCover {}
+                    StagePlayer {}
+                    div { class: "stage-widgets",
+                        StageClock {}
+                        StageWidgets {}
+                    }
                 }
-                IconBtn { icon: "close", title: "Закрыть (Esc)",
-                    onclick: move |_| {
-                        if *win_fs.peek() {
-                            window().set_fullscreen(false);
+                div { class: "stage-right",
+                    div { class: "stage-mark", "aria-hidden": "true", "{mark}" }
+                    div { class: "stage-lyrics-head",
+                        span { class: "stage-widget-title", "Текст" }
+                        span { class: if synced { "stage-tag on" } else { "stage-tag" }, span { class: "stage-tag-dot" } "{sync_label}" }
+                        button { class: "stage-tag", title: "Найти текст вручную",
+                            onclick: move |_| { let mut m = st.modal; m.set(Some(Modal::LyricsSearch)); },
+                            Icon { name: "lyrics", size: 13 } "LRCLIB"
                         }
-                        let mut f = st.fullscreen;
-                        f.set(false);
-                    } }
-            }
-            div { class: "fs-content",
-                div { class: "fs-left",
-                    div { class: "fs-cover", style: "--beat: {lv:.2};",
-                        span { class: "fs-glow" }
-                        Cover { src: art }
+                        div { class: "flex1" }
+                        OffsetControls {}
                     }
-                    if let Some(t) = now {
-                        div { class: "fs-title", "{t.title}" }
-                        div { class: "fs-artist", "{t.artist}" }
-                    }
-                    div { class: "fs-controls",
-                        Progress {}
-                        Controls { order }
-                        div { class: "fs-volume", Volume {} }
-                    }
+                    LyricsBody { prefix: "lf", big: true }
                 }
-                div { class: "fs-right", LyricsBody { prefix: "lf", big: true } }
             }
         }
     }

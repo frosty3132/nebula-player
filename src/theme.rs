@@ -306,6 +306,9 @@ pub struct Layout {
     pub titlebar_title: bool,
     /// Плеер в стиле Material 3: волнистая полоса прогресса, кнопка-«сквиркл», тональные кнопки.
     pub player_md3: bool,
+    /// Стиль «Сцена»: заголовок с часами и плашкой трека, значки разделов справа,
+    /// плеер с круглыми кнопками, пословная подсветка текста и в боковой панели.
+    pub stage_style: bool,
 }
 
 impl Default for Layout {
@@ -329,6 +332,7 @@ impl Default for Layout {
             show_logo: true,
             titlebar_title: true,
             player_md3: false,
+            stage_style: false,
         }
     }
 }
@@ -717,6 +721,31 @@ pub fn builtin_themes() -> Vec<Theme> {
             };
             t.shape = Shape { radius: 14.0, radius_small: 10.0, radius_large: 20.0, border_width: 1.0, cover_radius: 8.0, button_radius: 999.0 };
             t.glass = Glass { blur: 0.0, opacity: 0.94, saturation: 100.0, window_opacity: 1.0, glow: 0.0, liquid: false };
+            t.background = Background { kind: BgKind::Solid, nebula: false, dim: 0.0, ..Background::default() };
+            t.stars = Stars { density: 0.0, twinkle: false, shooting: false, ..Stars::default() };
+        }),
+        // тёмный монохром: мягко-чёрные карточки с тонкой рамкой, крупные
+        // скругления, белые элементы управления, без свечения и звёзд
+        theme("mono", "Монохром", |t| {
+            t.colors = Colors {
+                bg: "#070707".into(),
+                surface: "#111111".into(),
+                surface2: "#1a1a1a".into(),
+                text: "#f4f4f4".into(),
+                muted: "#8b8b8b".into(),
+                accent: "#ffffff".into(),
+                accent2: "#bdbdbd".into(),
+                glow: "#ffffff".into(),
+                danger: "#ff6b6b".into(),
+                border: "rgba(255,255,255,0.07)".into(),
+            };
+            t.shape = Shape { radius: 18.0, radius_small: 12.0, radius_large: 20.0, border_width: 1.0, cover_radius: 12.0, button_radius: 999.0 };
+            // значки разделов — вертикальной колонкой слева (только значки)
+            t.layout.sidebar = SidebarPos::Left;
+            t.layout.sidebar_compact = true;
+            t.layout.show_logo = false;
+            t.layout.stage_style = true;
+            t.glass = Glass { blur: 0.0, opacity: 0.96, saturation: 100.0, window_opacity: 1.0, glow: 0.0, liquid: false };
             t.background = Background { kind: BgKind::Solid, nebula: false, dim: 0.0, ..Background::default() };
             t.stars = Stars { density: 0.0, twinkle: false, shooting: false, ..Stars::default() };
         }),
