@@ -87,6 +87,10 @@ pub fn set_window_transitions(enabled: bool) {
 /// окно прозрачное, скругление рисует сама страница.
 pub fn style_window_frame() {
     set_window_transitions(false);
+    // при сворачивании Windows дорисовывала поверх окна классический заголовок
+    // «как в Windows 7», и он мелькал в анимации разворачивания
+    #[cfg(windows)]
+    super::desk_island::no_classic_frame(&window().window, false);
     #[cfg(windows)]
     {
         use dioxus::desktop::tao::platform::windows::WindowExtWindows;

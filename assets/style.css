@@ -2477,11 +2477,11 @@ button.stage-tag:hover { color: var(--text); border-color: rgba(var(--text-rgb),
 .stage-wave-times { display: flex; justify-content: space-between; font-size: 11px; color: rgba(var(--text-rgb), .5); font-variant-numeric: tabular-nums; }
 
 /* активная строка текста: акцентная полоска слева и лёгкий сдвиг */
-.stage .ly-line { position: relative; transition: translate 420ms cubic-bezier(.2, .9, .25, 1), color 300ms; }
+.stage .ly-line { position: relative; transition: translate 200ms cubic-bezier(.2, .9, .25, 1), color 200ms; }
 .stage .ly-line.active { translate: 14px 0; }
 .stage .ly-line.active::before { content: ""; position: absolute; left: -12px; top: 14%; bottom: 14%; width: 4px; border-radius: 4px;
-  background: linear-gradient(var(--accent), var(--accent2)); box-shadow: 0 0 14px rgba(var(--accent-rgb), .55); animation: ly-bar-in 420ms cubic-bezier(.2, .9, .25, 1.2) both; }
-@keyframes ly-bar-in { from { scale: 1 0; opacity: 0; } }
+  background: linear-gradient(var(--accent), var(--accent2)); box-shadow: 0 0 14px rgba(var(--accent-rgb), .55); animation: ly-bar-in 120ms ease-out both; }
+@keyframes ly-bar-in { from { scale: 1 .6; opacity: .4; } }
 /* конверт непрозрачный — пластинка всегда за ним */
 .stage-sleeve .cover { background: #161616; isolation: isolate; }
 .stage-sleeve .cover .cover-ph { background: linear-gradient(145deg, #2a2a2a, #121212); }
@@ -2642,3 +2642,13 @@ button.stage-tag:hover { color: var(--text); border-color: rgba(var(--text-rgb),
 .mix-card:hover .mix-play { opacity: 1; transform: none; }
 .mix-name { margin-top: 10px; font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mix-sub { margin-top: 2px; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* волна-прогресс «Сцены»: плавная заливка поверх столбиков */
+.stage-wave { display: block; }
+.sw-bars { position: absolute; inset: 0; display: flex; align-items: center; gap: 2px; pointer-events: none; }
+.sw-bars i { flex: 1; height: calc(var(--h) * 100%); border-radius: 2px; background: rgba(var(--text-rgb), .2); transition: scale 260ms cubic-bezier(.2, .9, .25, 1.2); }
+.sw-bars.lit i { background: rgba(var(--text-rgb), .95); }
+.sw-bars.lit { clip-path: inset(0 calc(100% - var(--pp, 0%)) 0 0); transition: clip-path 140ms linear; }
+.sw-head { position: absolute; top: 8%; bottom: 8%; left: var(--pp, 0%); width: 3px; margin-left: -1.5px; border-radius: 3px; background: var(--accent);
+  box-shadow: 0 0 10px rgba(var(--accent-rgb), .8); transition: left 140ms linear; pointer-events: none; }
+.stage-wave:hover .sw-bars i { scale: 1 1.08; }

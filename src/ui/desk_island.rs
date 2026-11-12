@@ -507,7 +507,7 @@ fn place(w: &DesktopContext, size: (f64, f64)) {
 /// классический заголовок «как в Windows 7» с кнопками. Убираем у окна стили
 /// заголовка (и не даём их вернуть) и глушим рисование рамки.
 #[cfg(windows)]
-fn no_classic_frame(win: &Window) {
+pub(super) fn no_classic_frame(win: &Window, strip_styles: bool) {
     use dioxus::desktop::tao::platform::windows::WindowExtWindows;
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
     use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
@@ -525,7 +525,7 @@ fn no_classic_frame(win: &Window) {
             WM_NCPAINT | WM_NCUAHDRAWCAPTION | WM_NCUAHDRAWFRAME => 0,
             // активность пусть отслеживается как обычно, но без перерисовки рамки
             WM_NCACTIVATE => DefSubclassProc(hwnd, msg, wp, -1),
-            WM_STYLECHANGING if wp as i32 == GWL_STYLE => {
+            WM_STYLECHANGING if wp as i32 == GWL_STYLE && _id == 0x4E49_534C => {
                 if let Some(s) = (lp as *mut STYLESTRUCT).as_mut() {
                     s.styleNew &= !FRAME;
                 }
@@ -538,7 +538,12 @@ fn no_classic_frame(win: &Window) {
     // SAFETY: hwnd — живое окно островка из этого же потока; процедура
     // подкласса — функция без состояния
     unsafe {
-        SetWindowSubclass(hwnd, Some(proc), 0x4E49_534C, 0);
+        SetWindowSubclass(hwnd, Some(proc), if strip_styles { 0x4E49_534C } else { 0x4E4D_4149 }, 0);
+        if !strip_styles {
+            // главное окно: стили оставляем (привязка к краям, анимации), только
+            // не даём Windows рисовать классическую рамку
+            return;
+        }
         let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
         SetWindowLongPtrW(hwnd, GWL_STYLE, style & !(FRAME as isize));
         SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
@@ -649,7 +654,7 @@ pub fn open(arrive_in: Duration) {
             return;
         }
         #[cfg(windows)]
-        no_classic_frame(&ctx.window);
+        no_classic_frame(&ctx.window, true);
         place_window(&ctx);
         place(&ctx, Mode::Compact.window());
         ctx.window.set_visible(true);

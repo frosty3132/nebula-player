@@ -235,10 +235,10 @@ pub fn StagePlayer() -> Element {
 fn StageWave() -> Element {
     const N: usize = 56;
     let st = app_state();
-    let quarter = use_memo(move || *st.position.read() / 250);
     let dur = *st.duration.read();
     let mut drag = use_signal(|| None::<u64>);
-    let pos = drag.read().unwrap_or(quarter() * 250);
+    // позиция приходит 10 раз в секунду — с коротким переходом заливка идёт без рывков
+    let pos = drag.read().unwrap_or(*st.position.read());
     let pct = if dur > 0 { (pos as f64 / dur as f64 * 100.0).min(100.0) } else { 0.0 };
     let id = st.now.read().as_ref().map(|t| t.id.clone()).unwrap_or_default();
     let bars = use_memo(use_reactive!(|id| {
@@ -257,13 +257,22 @@ fn StageWave() -> Element {
             })
             .collect::<Vec<f32>>()
     }));
-    let head = ((pct / 100.0) * N as f64).floor() as usize;
     rsx! {
         div { class: "stage-wave-wrap", "data-el": "progress",
-            div { class: "stage-wave",
-                for (i, h) in bars.read().iter().enumerate() {
-                    i { key: "{i}", class: if i < head { "on" } else if i == head { "head" }, style: "--h: {h:.3};" }
+            div { class: "stage-wave", style: "--pp: {pct}%;",
+                // тусклые столбики и поверх — светлые, открытые до позиции:
+                // заливка ползёт плавно, а не перескакивает по столбику
+                div { class: "sw-bars base",
+                    for (i, h) in bars.read().iter().enumerate() {
+                        i { key: "{i}", style: "--h: {h:.3};" }
+                    }
                 }
+                div { class: "sw-bars lit",
+                    for (i, h) in bars.read().iter().enumerate() {
+                        i { key: "{i}", style: "--h: {h:.3};" }
+                    }
+                }
+                span { class: "sw-head" }
                 input {
                     r#type: "range",
                     class: "stage-wave-input",
