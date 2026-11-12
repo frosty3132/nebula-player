@@ -180,7 +180,7 @@ pub fn Home() -> Element {
 
 /// Сколько визуализаторов сейчас на экране (уходящая страница может
 /// исчезать, пока новая уже показала свой) — анализатор работает, пока > 0.
-static VISUALIZERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+pub(super) static VISUALIZERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Принимает полосы спектра и выставляет высоту столбиков текущей страницы.
 const CAVA_JS: &str = r#"

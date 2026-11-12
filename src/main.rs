@@ -83,6 +83,19 @@ fn app_icon() -> Option<Icon> {
     Icon::from_rgba(rgba, S as u32, S as u32).ok()
 }
 
+/// Параметры WebView2. Одинаковые для всех окон приложения (главного и
+/// островка): окна с общей папкой данных WebView2 обязаны совпадать в них.
+pub fn webview_args() -> String {
+    #[allow(unused_mut)]
+    let mut args = String::from("--autoplay-policy=no-user-gesture-required --disable-features=msSmartScreenProtection");
+    // Только для отладочной сборки: доступ к DevTools Protocol для автотестов интерфейса.
+    #[cfg(debug_assertions)]
+    if let Ok(port) = std::env::var("NEBULA_DEVTOOLS_PORT") {
+        args.push_str(&format!(" --remote-debugging-port={port} --remote-allow-origins=http://127.0.0.1:{port}"));
+    }
+    args
+}
+
 fn main() {
     let p = paths::init();
     init_logging(p);
@@ -124,13 +137,7 @@ fn main() {
         wb = wb.with_undecorated_shadow(false);
     }
 
-    #[allow(unused_mut)]
-    let mut browser_args = String::from("--autoplay-policy=no-user-gesture-required --disable-features=msSmartScreenProtection");
-    // Только для отладочной сборки: доступ к DevTools Protocol для автотестов интерфейса.
-    #[cfg(debug_assertions)]
-    if let Ok(port) = std::env::var("NEBULA_DEVTOOLS_PORT") {
-        browser_args.push_str(&format!(" --remote-debugging-port={port} --remote-allow-origins=http://127.0.0.1:{port}"));
-    }
+    let browser_args = webview_args();
 
     let cfg = Config::new()
         .with_window(wb)

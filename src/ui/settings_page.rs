@@ -412,6 +412,9 @@ fn InterfaceTab() -> Element {
             }
             Row { label: "Масштаб интерфейса", hint: "Применяется, когда отпускаешь ползунок", Slider { value: s.ui_scale * 100.0, min: 70.0, max: 160.0, step: 5.0, unit: "%", commit_on_release: true, oninput: move |v: f32| upd(st, |s| s.ui_scale = v / 100.0) } }
             Row { label: "Поверх всех окон", Toggle { value: s.always_on_top, onchange: move |v| upd(st, |s| s.always_on_top = v) } }
+            Row { label: "Островок на рабочем столе", hint: "Свёрнутый плеер — капля вверху основного монитора поверх всех окон: карточка при наведении, громкость колёсиком, поиск песен. Окно Nebula на это время прячется",
+                Toggle { value: s.island_desktop, onchange: move |v| upd(st, |s| s.island_desktop = v) }
+            }
         }
         Card { title: "Анимации", icon: "sparkles", desc: "Переходы, скорость и заставка",
             Row { label: "Анимации", Toggle { value: s.animations, onchange: move |v| upd(st, |s| s.animations = v) } }

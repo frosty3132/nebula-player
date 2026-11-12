@@ -2165,3 +2165,263 @@ textarea, input { user-select: text; }
 .top-blur span:nth-child(3) { backdrop-filter: blur(6px);  -webkit-mask-image: linear-gradient(to top, transparent 45%, #000 82%); mask-image: linear-gradient(to top, transparent 45%, #000 82%); }
 .top-blur span:nth-child(4) { backdrop-filter: blur(12px); -webkit-mask-image: linear-gradient(to top, transparent 68%, #000 100%); mask-image: linear-gradient(to top, transparent 68%, #000 100%); }
 .app.low-power .top-blur { display: none; }
+
+/* ═══════════════════════ Сцена (полноэкранный режим) ═══════════════════════
+   Слева колонка карточек (обложка, плеер, часы и листаемый виджет), справа
+   крупный текст. Тёмный монохром: поверхности из темы, тонкие рамки,
+   белые элементы управления; цвет — только у слов текущей строки. */
+.fs-lyrics.stage {
+  background: radial-gradient(110% 90% at 72% 42%, rgba(var(--text-rgb), .04), transparent 62%), rgb(var(--bg-rgb));
+  backdrop-filter: none;
+}
+.stage-top { height: 58px; flex: 0 0 auto; display: flex; align-items: center; gap: 14px; padding: 0 10px 0 22px; }
+.stage-side { flex: 1 1 0; display: flex; align-items: center; gap: 10px; min-width: 0; }
+.stage-side.end { justify-content: flex-end; gap: 4px; }
+.stage-logo { width: 22px; height: 22px; display: grid; flex: 0 0 auto; }
+.stage-logo svg { width: 100%; height: 100%; }
+.stage-brand { font-weight: 800; font-size: .95em; letter-spacing: .07em; text-transform: uppercase; }
+.stage-clock { display: flex; flex-direction: column; line-height: 1.15; margin-left: 8px; }
+.stage-time { font-weight: 700; font-size: .92em; font-variant-numeric: tabular-nums; }
+.stage-date { font-size: .7em; color: var(--muted); }
+.stage-chip { font-size: .64em; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; padding: 3px 7px; border-radius: 6px; background: rgba(var(--text-rgb), .08); color: var(--muted); }
+.stage-center { flex: 0 1 auto; display: flex; justify-content: center; min-width: 0; }
+.stage-pill {
+  display: flex; align-items: center; gap: 10px;
+  max-width: 360px; height: 38px; padding: 0 14px 0 5px;
+  border-radius: 12px;
+  background: rgba(var(--surface-rgb), .92);
+  border: 1px solid rgba(var(--text-rgb), .09);
+  color: var(--text); font-weight: 600; font-size: .86em;
+  transition: border-color var(--t-fast), background var(--t-fast);
+}
+.stage-pill:hover { border-color: rgba(var(--text-rgb), .18); }
+.stage-pill-art { width: 28px; height: 28px; border-radius: 8px; flex: 0 0 auto; overflow: hidden; }
+.stage-pill-title { min-width: 0; }
+.stage-pill .bars { height: 12px; }
+.stage-switch { display: flex; padding: 3px; margin-right: 8px; border-radius: 10px; background: rgba(var(--text-rgb), .05); border: 1px solid rgba(var(--text-rgb), .08); }
+.stage-switch-btn { padding: 5px 11px; border-radius: 7px; font-size: .7em; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); transition: background var(--t-fast), color var(--t-fast); }
+.stage-switch-btn:hover { color: var(--text); }
+.stage-switch-btn.active { background: rgba(var(--text-rgb), .13); color: var(--text); cursor: default; }
+.stage-sep { width: 1px; height: 20px; margin: 0 6px; background: rgba(var(--text-rgb), .1); }
+
+.stage-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(300px, 33%) minmax(0, 1fr); gap: 30px; padding: 6px 22px 22px; }
+.stage-left { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+.stage-card {
+  position: relative;
+  border-radius: 18px;
+  background: rgba(var(--surface-rgb), .8);
+  border: 1px solid rgba(var(--text-rgb), .08);
+  box-shadow: inset 0 1px 0 rgba(var(--text-rgb), .04), 0 14px 36px rgba(0, 0, 0, .3);
+}
+
+/* обложка */
+.stage-cover { flex: 1 1 auto; min-height: 150px; overflow: hidden; }
+.stage-cover .cover { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 0; }
+.stage-cover .cover img { width: 100%; height: 100%; object-fit: cover; transform: scale(calc(1 + var(--beat, 0) * .025)); transition: transform 120ms linear; }
+.stage-cover-btn {
+  position: absolute; top: 12px; right: 12px; z-index: 2;
+  width: 32px; height: 32px; border-radius: 10px;
+  display: grid; place-items: center;
+  color: #fff; background: rgba(0, 0, 0, .35); backdrop-filter: blur(10px);
+  opacity: .75; transition: opacity var(--t-fast), background var(--t-fast);
+}
+.stage-cover-btn:hover { opacity: 1; background: rgba(0, 0, 0, .55); }
+
+/* плеер */
+.stage-player { flex: 0 0 auto; padding: 16px 16px 12px; display: flex; flex-direction: column; gap: 12px; }
+.stage-player-head { display: flex; align-items: center; gap: 6px; }
+.stage-player-meta { flex: 1; min-width: 0; }
+.stage-player-title { font-weight: 800; font-size: 1.12em; }
+.stage-player-artist { margin-top: 2px; font-size: .8em; color: var(--muted); }
+.stage-round { width: 34px; height: 34px; flex: 0 0 auto; border-radius: 50%; display: grid; place-items: center; color: var(--muted); transition: background var(--t-fast), color var(--t-fast); }
+.stage-round:hover { color: var(--text); background: rgba(var(--text-rgb), .08); }
+.stage-round.active { color: var(--text); background: rgba(var(--text-rgb), .13); }
+.stage-player .controls { justify-content: center; gap: 12px; }
+.stage-player .controls .icon-btn { width: 36px; height: 36px; border-radius: 50%; background: rgba(var(--text-rgb), .06); border: 1px solid rgba(var(--text-rgb), .08); }
+.stage-player .play-btn { width: 46px; height: 46px; background: #fff; color: #0a0a0a; box-shadow: 0 6px 22px rgba(255, 255, 255, .16); }
+.stage-player .play-btn.playing::before { display: none; }
+.stage-player .progress-wrap { display: grid; grid-template-columns: 1fr auto; gap: 7px 0; max-width: none; }
+.stage-player .progress-wrap .progress { grid-column: 1 / -1; grid-row: 1; }
+.stage-player .progress-wrap .time { grid-row: 2; font-size: .72em; }
+.stage-player .progress-wrap .time:last-child { text-align: right; }
+.stage-player .pr-fill { background: var(--text); box-shadow: none; }
+
+/* виджеты */
+.stage-widgets { flex: 0 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.stage-widget { min-height: 158px; padding: 13px 14px 10px; display: flex; flex-direction: column; min-width: 0; }
+.stage-widget-head { display: flex; align-items: center; gap: 4px; min-height: 22px; }
+.stage-widget-title { font-size: .66em; font-weight: 800; letter-spacing: .15em; text-transform: uppercase; color: var(--muted); }
+.stage-arrow { width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; color: var(--muted); transition: background var(--t-fast), color var(--t-fast); }
+.stage-arrow:hover { color: var(--text); background: rgba(var(--text-rgb), .08); }
+.stage-widget-body { flex: 1; min-height: 0; display: flex; align-items: center; animation: stage-swap calc(320ms * var(--anim, 1)) var(--ease-out) both; }
+@keyframes stage-swap { from { opacity: 0; transform: translateX(10px); } }
+.stage-dots { display: flex; justify-content: center; gap: 5px; padding-top: 8px; }
+.stage-dot { width: 5px; height: 5px; border-radius: 99px; background: rgba(var(--text-rgb), .2); transition: width var(--t-med) var(--ease-out), background var(--t-fast); }
+.stage-dot.active { width: 16px; background: var(--text); }
+
+/* часы: кольцо секунд крутится CSS-анимацией */
+.stage-clock-body { flex: 1; display: flex; align-items: center; gap: 14px; }
+.stage-ring { flex: 0 0 auto; transform: rotate(-90deg); }
+.stage-ring-bg { stroke: rgba(var(--text-rgb), .1); }
+.stage-ring-fg { stroke: var(--text); stroke-linecap: round; stroke-dasharray: 119.4; stroke-dashoffset: 119.4; animation: stage-sec 60s linear infinite; }
+@keyframes stage-sec { to { stroke-dashoffset: 0; } }
+.stage-clock-time { font-size: 1.55em; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.stage-clock-date { margin-top: 3px; font-size: .72em; color: var(--muted); }
+
+/* визуализатор: столбики с отражением */
+.stage-viz { width: 100%; height: 64px; display: flex; align-items: flex-end; gap: 3px; -webkit-box-reflect: below 3px linear-gradient(transparent 55%, rgba(0, 0, 0, .28)); }
+.stage-viz i { flex: 1; min-width: 2px; height: calc(6% + var(--h, 0) * 94%); border-radius: 2px 2px 0 0; background: linear-gradient(var(--text), rgba(var(--text-rgb), .4)); transition: height 90ms linear; }
+
+/* мини-эквалайзер */
+.stage-eq { width: 100%; display: flex; flex-direction: column; gap: 12px; }
+.stage-eq-info { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: .74em; color: var(--muted); }
+.stage-eq-toggle { padding: 2px 8px; border-radius: 6px; font-size: 1em; color: var(--muted); background: rgba(var(--text-rgb), .06); }
+.stage-eq-toggle.on { color: var(--text); }
+.stage-eq-bands { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; cursor: pointer; transition: opacity var(--t-fast); }
+.stage-eq-bands.off { opacity: .45; }
+.stage-eq-band { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+.stage-eq-track { position: relative; width: 100%; height: 2px; border-radius: 2px; background: rgba(var(--text-rgb), .18); }
+.stage-eq-knob { position: absolute; top: 50%; width: 7px; height: 7px; border-radius: 50%; background: var(--text); transform: translate(-50%, -50%); }
+.stage-eq-freq { font-size: .6em; color: var(--muted); }
+
+/* статистика */
+.stage-stats { width: 100%; display: flex; flex-direction: column; gap: 6px; }
+.stage-stats-row { display: flex; align-items: baseline; gap: 8px; }
+.stage-stats-big { font-size: 1.3em; font-weight: 800; }
+.stage-stats-sub { font-size: .72em; color: var(--muted); }
+.stage-stats-top { font-size: .72em; color: var(--muted); }
+
+/* текст */
+.stage-right { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.stage-lyrics-head { display: flex; align-items: center; gap: 8px; min-height: 34px; }
+.stage-tag { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 8px; font-size: .72em; font-weight: 600; color: var(--muted); background: rgba(var(--text-rgb), .05); border: 1px solid rgba(var(--text-rgb), .08); }
+button.stage-tag:hover { color: var(--text); border-color: rgba(var(--text-rgb), .16); }
+.stage-tag-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.stage-tag.on { color: var(--text); }
+.stage-tag.on .stage-tag-dot { background: #86efac; box-shadow: 0 0 8px #86efac; }
+.stage .ly-body {
+  padding: 0 6px 0 2px;
+  font-size: max(var(--lyrics-fs), 34px);
+  line-height: 1.14;
+  letter-spacing: -.01em;
+  text-align: left;
+  mask-image: linear-gradient(transparent, #000 13%, #000 76%, transparent);
+}
+.stage .ly-line { margin: 0 0 .32em; padding: 4px 6px; font-weight: 800; color: rgba(var(--text-rgb), .42); }
+.stage .ly-line.past { color: rgba(var(--text-rgb), .3); }
+.stage .ly-body.blur .ly-line { filter: blur(calc(var(--d) * .8px)); }
+.stage .ly-line.active { color: #fff; transform: none; text-shadow: none; }
+.stage .ly-line:hover { background: rgba(var(--text-rgb), .04); }
+/* слова текущей строки загораются по очереди, каждое своим цветом */
+.stage .ly-w { animation: ly-word calc(420ms * var(--anim, 1)) ease-out var(--wl, 0ms) forwards; }
+@keyframes ly-word {
+  from { color: #fff; text-shadow: none; }
+  to { color: var(--wc); text-shadow: 0 0 22px color-mix(in srgb, var(--wc) 60%, transparent), 0 0 2px color-mix(in srgb, var(--wc) 45%, transparent); }
+}
+.app.is-paused .stage .ly-w { animation-play-state: paused; }
+
+@media (max-width: 980px) {
+  .stage-body { grid-template-columns: minmax(260px, 40%) minmax(0, 1fr); gap: 18px; }
+  .stage-clock, .stage-chip { display: none; }
+}
+
+/* ═══ Сцена: «плавающий» текст ═══
+   Слова текущей строки: влетают по очереди (скос, размытие, масштаб), затем
+   загораются своим цветом и всё время слегка покачиваются вверх-вниз и
+   наклоняются — у каждого слова своя фаза. Три анимации задают разные
+   свойства (transform/scale/filter, color, translate/rotate), поэтому не
+   мешают друг другу. --wi — номер слова, --wl — когда слово загорается. */
+.stage .ly-line.active .ly-w {
+  display: inline-block;
+  transform-origin: 50% 70%;
+  animation-name: ly-word-in, ly-word, ly-float;
+  animation-duration: calc(560ms * var(--anim, 1)), calc(420ms * var(--anim, 1)), calc(3.2s * var(--anim, 1));
+  animation-timing-function: cubic-bezier(.2, .9, .25, 1), ease-out, ease-in-out;
+  animation-delay: calc(var(--wi, 0) * 45ms * var(--anim, 1)), var(--wl, 0ms), calc(var(--wi, 0) * -0.61s);
+  animation-fill-mode: backwards, forwards, none;
+  animation-iteration-count: 1, 1, infinite;
+}
+@keyframes ly-word-in {
+  from { transform: skewX(-16deg) translateY(.28em); scale: .9; opacity: .25; filter: blur(5px); }
+  to { transform: none; scale: 1; opacity: 1; filter: none; }
+}
+@keyframes ly-float {
+  0%, 100% { translate: 0 0; rotate: 0deg; }
+  25% { translate: 0 -.07em; rotate: -1.8deg; }
+  50% { translate: 0 .02em; rotate: .4deg; }
+  75% { translate: 0 .06em; rotate: 1.4deg; }
+}
+.app.is-paused .stage .ly-line.active .ly-w { animation-play-state: paused; }
+.app.no-anim .stage .ly-line.active .ly-w,
+.app.low-power .stage .ly-line.active .ly-w { animation-name: none, ly-word, none; }
+
+/* ═══════════════════════ Основное окно в стиле «Сцена» ═══════════════════════
+   Тот же язык, что у сцены: заголовок в одну строку (название и часы слева,
+   плашка трека по центру, значки разделов справа), карточка плеера с
+   круглыми кнопками и белой кнопкой воспроизведения, пословная подсветка
+   текста в боковой панели. Включается флагом темы (layout.stage_style). */
+.app.stage-style { --tb-h: 58px; }
+.app.stage-style .titlebar.stage-titlebar { height: 58px; align-items: center; z-index: 40; gap: 14px; padding: 0 8px 0 18px; }
+.stage-titlebar .stage-side { flex: 0 1 auto; }
+.stage-titlebar .stage-center { flex: 1 1 auto; min-width: 0; display: flex; justify-content: center; }
+.stage-titlebar .tb-nav { margin-left: 6px; }
+.stage-titlebar .stage-pill { min-width: 0; }
+.stage-titlebar .stage-switch { margin: 0 4px 0 6px; }
+/* значки разделов — просто ряд кнопок, без отдельной «таблетки» */
+.app.stage-style .stage-titlebar .dock {
+  height: 38px;
+  padding: 0 2px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.app.stage-style .stage-titlebar .dock-sep { margin: 0 6px; }
+@media (max-width: 1180px) {
+  .stage-titlebar .stage-clock, .stage-titlebar .stage-chip { display: none; }
+}
+@media (max-width: 980px) {
+  .stage-titlebar .stage-brand { display: none; }
+}
+
+/* плеер — карточка, как на сцене */
+.app.stage-style .player {
+  border-radius: 18px;
+  background: rgba(var(--surface-rgb), .86);
+  border: 1px solid rgba(var(--text-rgb), .08);
+  box-shadow: inset 0 1px 0 rgba(var(--text-rgb), .04), 0 14px 36px rgba(0, 0, 0, .3);
+}
+.app.stage-style .player::before { display: none; }
+.app.stage-style .player .controls { gap: 12px; }
+.app.stage-style .player .controls .icon-btn {
+  width: 36px; height: 36px; border-radius: 50%;
+  background: rgba(var(--text-rgb), .06);
+  border: 1px solid rgba(var(--text-rgb), .08);
+}
+.app.stage-style .player .controls .icon-btn.active { color: var(--text); background: rgba(var(--text-rgb), .14); }
+.app.stage-style .play-btn { background: var(--text); color: rgb(var(--bg-rgb)); box-shadow: 0 6px 22px rgba(var(--text-rgb), .14); }
+.app.stage-style .play-btn.playing::before { display: none; }
+.app.stage-style:not(.md3) .pr-fill { background: var(--text); box-shadow: none; }
+.app.stage-style .vol-fill { background: var(--text); }
+
+/* боковая панель текста: слова загораются и «плавают», как на сцене */
+.app.stage-style .lyrics .ly-line { font-weight: 800; }
+.app.stage-style .lyrics .ly-line.active { color: #fff; transform: none; text-shadow: none; }
+.app.stage-style .lyrics .ly-w { animation: ly-word calc(420ms * var(--anim, 1)) ease-out var(--wl, 0ms) forwards; }
+.app.stage-style .lyrics .ly-line.active .ly-w {
+  display: inline-block;
+  transform-origin: 50% 70%;
+  animation-name: ly-word-in, ly-word, ly-float;
+  animation-duration: calc(560ms * var(--anim, 1)), calc(420ms * var(--anim, 1)), calc(3.2s * var(--anim, 1));
+  animation-timing-function: cubic-bezier(.2, .9, .25, 1), ease-out, ease-in-out;
+  animation-delay: calc(var(--wi, 0) * 45ms * var(--anim, 1)), var(--wl, 0ms), calc(var(--wi, 0) * -0.61s);
+  animation-fill-mode: backwards, forwards, none;
+  animation-iteration-count: 1, 1, infinite;
+}
+.app.stage-style.is-paused .lyrics .ly-line.active .ly-w { animation-play-state: paused; }
+.app.stage-style.no-anim .lyrics .ly-line.active .ly-w,
+.app.stage-style.low-power .lyrics .ly-line.active .ly-w { animation-name: none, ly-word, none; }
+/* у верхней панели свои правила для краёв заголовка (делят его пополам) —
+   в стиле «Сцена» края берут ширину по содержимому, центр — остальное */
+.app.stage-style .stage-titlebar .stage-side { flex: 0 1 auto; min-width: 0; padding: 0; align-items: center; }
+.app.stage-style .stage-titlebar .stage-center { flex: 1 1 auto; padding: 0; }

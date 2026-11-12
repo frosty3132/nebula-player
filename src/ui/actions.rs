@@ -438,6 +438,12 @@ pub fn set_player_collapsed(state: AppState, collapsed: bool) {
     if st.settings.peek().player_collapsed == collapsed || *st.player_switching.peek() {
         return;
     }
+    // с островком на рабочем столе главное окно стекает каплей в островок и
+    // прячется совсем — управлять музыкой можно с островка поверх всех окон
+    if collapsed && st.settings.peek().island_desktop {
+        super::desk_island::fly_out(state);
+        return;
+    }
     let (animate, k) = {
         let s = st.settings.peek();
         (s.animations && !s.low_power, s.anim_speed.clamp(0.05, 3.0))
