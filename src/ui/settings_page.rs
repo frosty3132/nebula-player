@@ -323,7 +323,35 @@ fn PlaybackTab() -> Element {
                 Slider { value: s.prev_restart_s, min: 0.0, max: 15.0, step: 1.0, unit: " с", oninput: move |v: f32| upd(st, |s| s.prev_restart_s = v) }
             }
         }
+        DownloadsCard {}
         YouTubeCard {}
+    }
+}
+
+/// Скачивание треков: папка и вопрос «куда сохранить».
+#[component]
+fn DownloadsCard() -> Element {
+    let st = app_state();
+    let s = st.settings.read().clone();
+    let dir = super::download::default_dir(st).display().to_string();
+    rsx! {
+        Card { title: "Скачивание треков", icon: "download", desc: "Кнопка «Скачать» в плеере сохраняет текущий трек в файл",
+            Row { label: "Папка для треков", hint: "{dir}",
+                button { class: "btn",
+                    onclick: move |_| {
+                        spawn(async move {
+                            if let Some(d) = rfd::AsyncFileDialog::new().set_title("Папка для скачанных треков").pick_folder().await {
+                                upd(st, |s| s.download_dir = Some(d.path().display().to_string()));
+                            }
+                        });
+                    },
+                    "Изменить…"
+                }
+            }
+            Row { label: "Спрашивать, куда сохранить", hint: "Перед каждым скачиванием — окно с выбором папки и галочкой «По умолчанию»",
+                Toggle { value: s.download_ask, onchange: move |v| upd(st, |s| s.download_ask = v) }
+            }
+        }
     }
 }
 
@@ -414,6 +442,22 @@ fn InterfaceTab() -> Element {
             Row { label: "Поверх всех окон", Toggle { value: s.always_on_top, onchange: move |v| upd(st, |s| s.always_on_top = v) } }
             Row { label: "Островок на рабочем столе", hint: "Свёрнутый плеер — капля вверху основного монитора поверх всех окон: карточка при наведении, громкость колёсиком, поиск песен. Окно Nebula на это время прячется",
                 Toggle { value: s.island_desktop, onchange: move |v| upd(st, |s| s.island_desktop = v) }
+            }
+            Row { label: "Часы в «Сцене»", hint: "Оформление виджета часов; щелчок по самим часам тоже переключает",
+                Seg { value: s.clock_style.clone(), options: super::stage::CLOCK_STYLES.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect(),
+                    onchange: move |v: String| upd(st, |s| s.clock_style = v) }
+            }
+            Row { label: "Погода в островке", hint: "Город — островок покажет погоду рядом с часами, когда музыка не играет. Пусто — без погоды",
+                input {
+                    class: "set-text",
+                    r#type: "text",
+                    placeholder: "Например, Москва",
+                    value: "{s.weather_city}",
+                    onchange: move |e: FormEvent| upd(st, |s| s.weather_city = e.value().trim().to_string()),
+                }
+            }
+            Row { label: "Сворачивать в трей при закрытии", hint: "Крестик прячет Nebula к часам у панели задач — музыка играет дальше. Вернуть окно или выйти — щелчком по значку",
+                Toggle { value: s.close_to_tray, onchange: move |v| upd(st, |s| s.close_to_tray = v) }
             }
         }
         Card { title: "Анимации", icon: "sparkles", desc: "Переходы, скорость и заставка",

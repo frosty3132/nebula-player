@@ -99,10 +99,12 @@ pub struct Player {
     tx: Sender<Cmd>,
     shared: Arc<Shared>,
     events: Mutex<Option<UnboundedReceiver<PlayerEvent>>>,
+    http: reqwest::Client,
 }
 
 impl Player {
     pub fn new(http: reqwest::Client, rt: Handle, dsp: DspParams, device: Option<String>) -> Self {
+        let http_keep = http.clone();
         let (tx, rx) = crossbeam_channel::unbounded();
         let (ev_tx, ev_rx) = unbounded_channel();
         let shared = Arc::new(Shared {
@@ -118,7 +120,7 @@ impl Player {
             .name("nebula-player".into())
             .spawn(move || Controller::new(rx, sh, ev_tx, http, rt, device).run())
             .expect("не удалось запустить поток плеера");
-        Self { tx, shared, events: Mutex::new(Some(ev_rx)) }
+        Self { tx, shared, events: Mutex::new(Some(ev_rx)), http: http_keep }
     }
 
     pub fn load(&self, id: u64, spec: MediaSpec, start_ms: u64, autoplay: bool, duration_hint_ms: u64) {
@@ -152,6 +154,11 @@ impl Player {
     pub fn set_crossfade(&self, ms: u64) {
         self.shared.crossfade_ms.store(ms.min(12_000), Ordering::Relaxed);
     }
+    /// HTTP-клиент плеера (те же заголовки и прокси) — для скачивания треков.
+    pub fn http_client(&self) -> reqwest::Client {
+        self.http.clone()
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         self.shared.snapshot.lock().clone()
     }

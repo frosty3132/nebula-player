@@ -361,11 +361,13 @@ fn Extras(order: Vec<Extra>) -> Element {
                     },
                     Extra::Eq => rsx! {
                         IconBtn { key: "{x:?}", icon: "eq", title: "Эквалайзер", active: eq_open, size: 19,
-                            onclick: move |_| { let mut e = st.eq_open; let v = !*e.peek(); e.set(v); } }
+                            onclick: move |_| set_eq_open(st, !*st.eq_open.peek()) }
                     },
                     Extra::Volume => rsx! { Volume { key: "{x:?}" } },
                 }
             }
+            IconBtn { icon: "download", title: "Скачать трек", size: 19, class: "p-download",
+                onclick: move |_| super::download::start_download(st) }
             span { class: "p-sep" }
             IconBtn { icon: "to_top", title: "Свернуть плеер в островок", size: 19, class: "p-collapse",
                 onclick: move |_| set_player_collapsed(st, true) }
@@ -430,19 +432,53 @@ pub fn Volume() -> Element {
     }
 }
 
+/// Панель эквалайзера доигрывает уход, прежде чем исчезнуть.
+pub static EQ_LEAVING: GlobalSignal<bool> = Signal::global(|| false);
+
+/// Открыть или закрыть эквалайзер — закрытие с анимацией.
+pub fn set_eq_open(st: AppState, open: bool) {
+    let mut e = st.eq_open;
+    if open {
+        *EQ_LEAVING.write() = false;
+        e.set(true);
+        return;
+    }
+    if !*e.peek() || *EQ_LEAVING.peek() {
+        return;
+    }
+    let (anim, k) = {
+        let s = st.settings.peek();
+        (s.animations && !s.low_power, s.anim_speed.clamp(0.05, 3.0))
+    };
+    if !anim {
+        e.set(false);
+        return;
+    }
+    *EQ_LEAVING.write() = true;
+    dioxus::core::spawn_forever(async move {
+        tokio::time::sleep(std::time::Duration::from_millis((230.0 * k) as u64)).await;
+        *EQ_LEAVING.write() = false;
+        let mut e = st.eq_open;
+        e.set(false);
+    });
+}
+
 #[component]
 pub fn EqPanel() -> Element {
     let st = app_state();
     let s = st.settings.read().clone();
     let bands = s.eq_bands;
+    // в «Сцене» нижнего плеера нет — панель открывается по центру поверх неё
+    let in_stage = *st.fullscreen.read();
+    let leaving = EQ_LEAVING();
     rsx! {
-        div { class: "eq-backdrop", onclick: move |_| { let mut e = st.eq_open; e.set(false); } }
-        div { class: "eq-panel glass", "data-el": "eq_panel", onclick: move |e| e.stop_propagation(),
+        div { class: if in_stage { "eq-backdrop in-stage" } else { "eq-backdrop" }, class: if leaving { "leaving" }, onclick: move |_| set_eq_open(st, false) }
+        div { class: if in_stage { "eq-panel glass in-stage" } else { "eq-panel glass" }, class: if leaving { "leaving" }, "data-el": "eq_panel", onclick: move |e| e.stop_propagation(),
             div { class: "eq-head",
                 h3 { Icon { name: "eq", size: 18 } "Эквалайзер" }
                 Toggle { value: s.eq_enabled, onchange: move |v| { let mut ss = st.settings; ss.write().eq_enabled = v; } }
                 div { class: "flex1" }
-                IconBtn { icon: "close", size: 18, title: "Закрыть", onclick: move |_| { let mut e = st.eq_open; e.set(false); } }
+                IconBtn { icon: "close", size: 18, title: "Закрыть", onclick: move |_| set_eq_open(st, false) }
             }
             div { class: "eq-presets",
                 for (id , name , vals) in EQ_PRESETS.iter() {

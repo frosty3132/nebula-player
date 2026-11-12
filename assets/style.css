@@ -2425,3 +2425,220 @@ button.stage-tag:hover { color: var(--text); border-color: rgba(var(--text-rgb),
    в стиле «Сцена» края берут ширину по содержимому, центр — остальное */
 .app.stage-style .stage-titlebar .stage-side { flex: 0 1 auto; min-width: 0; padding: 0; align-items: center; }
 .app.stage-style .stage-titlebar .stage-center { flex: 1 1 auto; padding: 0; }
+
+/* ── эквалайзер поверх «Сцены»: по центру, с затемнением ── */
+.eq-backdrop.in-stage { background: rgba(0, 0, 0, .5); backdrop-filter: blur(8px); animation: fade-in calc(220ms * var(--anim, 1)) ease both; }
+.app .eq-panel.in-stage, .app.pl-top .eq-panel.in-stage, .app.pl-float-top .eq-panel.in-stage, .app.pl-float-top:not(.sb-top):not(.player-collapsed) .eq-panel.in-stage {
+  top: 50%; left: 50%; right: auto; bottom: auto; translate: -50% -50%;
+  width: min(620px, calc(100vw - 48px)); max-height: calc(100vh - 48px); overflow-y: auto;
+  background: rgba(16, 16, 16, .92); box-shadow: 0 40px 120px rgba(0, 0, 0, .7), inset 0 0 0 1px rgba(255, 255, 255, .06);
+}
+
+/* ── «Сцена»: свои штрихи ── */
+/* сияние цвета обложки за сценой: три размытых пятна медленно дрейфуют */
+.fs-lyrics.stage { isolation: isolate; }
+.stage-aurora { position: absolute; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+.stage-aurora i { position: absolute; width: 46vmax; height: 46vmax; border-radius: 50%; filter: blur(90px); opacity: .16;
+  background: radial-gradient(circle, var(--accent), transparent 68%); animation: aurora-drift 28s ease-in-out infinite alternate; }
+.stage-aurora i:nth-child(1) { left: -10vmax; top: -14vmax; }
+.stage-aurora i:nth-child(2) { right: -12vmax; top: 18%; background: radial-gradient(circle, var(--accent2), transparent 68%); animation-duration: 34s; animation-delay: -9s; opacity: .12; }
+.stage-aurora i:nth-child(3) { left: 30%; bottom: -22vmax; animation-duration: 40s; animation-delay: -17s; opacity: .1; }
+@keyframes aurora-drift { 0% { translate: 0 0; scale: 1; } 50% { translate: 6vmax 4vmax; scale: 1.12; } 100% { translate: -4vmax 7vmax; scale: .94; } }
+.app.is-paused .stage-aurora i, .app.no-anim .stage-aurora i, .app.low-power .stage-aurora i { animation-play-state: paused; }
+.stage-left .stage-card, .stage-right { background-color: rgba(var(--surface-rgb, 17, 17, 17), .72); }
+
+/* обложка — конверт пластинки, винил выезжает и крутится, пока играет музыка */
+.stage-cover { isolation: isolate; }
+.stage-cover-bg { position: absolute; inset: -40px; z-index: -1; background-size: cover; background-position: center; filter: blur(42px) saturate(1.3) brightness(.45); }
+.stage-sleeve { position: absolute; top: 9%; left: 7%; height: 82%; aspect-ratio: 1; max-width: 62%; max-height: 82%; }
+.stage-sleeve .cover { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; border-radius: 12px; overflow: hidden;
+  box-shadow: 0 24px 50px -16px rgba(0, 0, 0, .75), inset 0 0 0 1px rgba(255, 255, 255, .08); }
+.stage-vinyl { position: absolute; inset: 3%; z-index: 0; border-radius: 50%;
+  background: radial-gradient(circle, transparent 31%, rgba(255, 255, 255, .06) 31.5%, transparent 33%),
+    repeating-radial-gradient(circle, #0d0d0d 0 1.6px, #1a1a1a 1.6px 3px);
+  box-shadow: 0 16px 40px -12px rgba(0, 0, 0, .8), inset 0 0 0 1px rgba(255, 255, 255, .05);
+  translate: 18% 0; transition: translate 900ms cubic-bezier(.2, .9, .25, 1); }
+.stage-vinyl::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: conic-gradient(from 30deg, transparent 0 10%, rgba(255, 255, 255, .09) 14%, transparent 20% 60%, rgba(255, 255, 255, .06) 64%, transparent 70%); }
+.stage-vinyl-label { position: absolute; inset: 34%; border-radius: 50%; background: var(--accent) center / cover; box-shadow: 0 0 0 3px #0a0a0a; animation: vinyl-spin 3.6s linear infinite; animation-play-state: paused; }
+.stage-vinyl-label::after { content: ""; position: absolute; left: 50%; top: 50%; width: 9%; height: 9%; margin: -4.5% 0 0 -4.5%; border-radius: 50%; background: #0a0a0a; }
+.stage-cover.playing .stage-vinyl { translate: 46% 0; }
+.stage-cover.playing .stage-vinyl-label { animation-play-state: running; }
+@keyframes vinyl-spin { to { rotate: 360deg; } }
+.stage-cover .cover img { transform: none; }
+
+/* прогресс — волна из столбиков */
+.stage-wave-wrap { display: flex; flex-direction: column; gap: 6px; }
+.stage-wave { position: relative; height: 34px; display: flex; align-items: center; gap: 2px; }
+.stage-wave i { flex: 1; height: calc(var(--h) * 100%); border-radius: 2px; background: rgba(var(--text-rgb), .2); transition: background 200ms, scale 260ms cubic-bezier(.2, .9, .25, 1.2); }
+.stage-wave i.on { background: rgba(var(--text-rgb), .92); }
+.stage-wave i.head { background: var(--accent); scale: 1 1.15; box-shadow: 0 0 12px rgba(var(--accent-rgb), .6); }
+.stage-wave:hover i { scale: 1 1.08; }
+.stage-wave-input { position: absolute; inset: -6px 0; width: 100%; height: calc(100% + 12px); margin: 0; opacity: 0; cursor: pointer; }
+.stage-wave-times { display: flex; justify-content: space-between; font-size: 11px; color: rgba(var(--text-rgb), .5); font-variant-numeric: tabular-nums; }
+
+/* активная строка текста: акцентная полоска слева и лёгкий сдвиг */
+.stage .ly-line { position: relative; transition: translate 420ms cubic-bezier(.2, .9, .25, 1), color 300ms; }
+.stage .ly-line.active { translate: 14px 0; }
+.stage .ly-line.active::before { content: ""; position: absolute; left: -12px; top: 14%; bottom: 14%; width: 4px; border-radius: 4px;
+  background: linear-gradient(var(--accent), var(--accent2)); box-shadow: 0 0 14px rgba(var(--accent-rgb), .55); animation: ly-bar-in 420ms cubic-bezier(.2, .9, .25, 1.2) both; }
+@keyframes ly-bar-in { from { scale: 1 0; opacity: 0; } }
+/* конверт непрозрачный — пластинка всегда за ним */
+.stage-sleeve .cover { background: #161616; isolation: isolate; }
+.stage-sleeve .cover .cover-ph { background: linear-gradient(145deg, #2a2a2a, #121212); }
+.stage-vinyl-label { background-color: #1c1c1c; box-shadow: 0 0 0 3px #0a0a0a, inset 0 0 0 2px rgba(var(--accent-rgb), .55); }
+
+/* текстовое поле в строке настроек (город для погоды) */
+.set-text { width: 200px; max-width: 100%; height: 34px; padding: 0 12px; border-radius: 10px; border: 1px solid rgba(var(--text-rgb), .1);
+  background: rgba(var(--text-rgb), .05); color: var(--text); font: inherit; font-size: 13px; outline: none; transition: border-color 160ms, background 160ms; }
+.set-text:focus { border-color: rgba(var(--accent-rgb), .6); background: rgba(var(--text-rgb), .08); }
+
+/* ── эквалайзер: появление и уход ── */
+.eq-panel { animation: eq-in calc(340ms * var(--anim, 1)) cubic-bezier(.2, .9, .25, 1.12) both; transform-origin: 90% 100%; }
+.eq-panel.in-stage { transform-origin: 50% 50%; }
+@keyframes eq-in { from { opacity: 0; transform: translateY(14px) scale(.92); filter: blur(6px); } }
+.eq-panel.leaving { animation: eq-out calc(220ms * var(--anim, 1)) cubic-bezier(.5, 0, .75, 0) both; pointer-events: none; }
+@keyframes eq-out { to { opacity: 0; transform: translateY(10px) scale(.94); filter: blur(4px); } }
+.eq-backdrop.leaving { animation: fade-out calc(220ms * var(--anim, 1)) ease both; pointer-events: none; }
+@keyframes fade-out { to { opacity: 0; } }
+/* полосы эквалайзера «вырастают» по очереди */
+.eq-panel .eq-band { animation: eq-band-in calc(420ms * var(--anim, 1)) cubic-bezier(.2, .9, .25, 1.15) both; }
+.eq-panel .eq-band:nth-child(1) { animation-delay: 40ms; } .eq-panel .eq-band:nth-child(2) { animation-delay: 60ms; }
+.eq-panel .eq-band:nth-child(3) { animation-delay: 80ms; } .eq-panel .eq-band:nth-child(4) { animation-delay: 100ms; }
+.eq-panel .eq-band:nth-child(5) { animation-delay: 120ms; } .eq-panel .eq-band:nth-child(6) { animation-delay: 140ms; }
+.eq-panel .eq-band:nth-child(7) { animation-delay: 160ms; } .eq-panel .eq-band:nth-child(8) { animation-delay: 180ms; }
+.eq-panel .eq-band:nth-child(9) { animation-delay: 200ms; } .eq-panel .eq-band:nth-child(10) { animation-delay: 220ms; }
+@keyframes eq-band-in { from { opacity: 0; transform: translateY(16px) scaleY(.6); } }
+
+/* ── «Сцена»: пластинка с тонармом ── */
+.stage-sleeve { top: 12%; left: 6%; height: 76%; max-width: 58%; }
+.stage-vinyl { inset: 2%; translate: 34% 0; }
+.stage-cover.playing .stage-vinyl { translate: 54% 0; }
+/* бороздки пластинки переливаются, пока она крутится */
+.stage-vinyl::after { animation: vinyl-sheen 3.6s linear infinite; animation-play-state: paused; }
+.stage-cover.playing .stage-vinyl::after { animation-play-state: running; }
+@keyframes vinyl-sheen { 50% { opacity: .55; } }
+.stage-arm { position: absolute; z-index: 3; top: 6%; right: 7%; height: 78%; width: auto; overflow: visible; pointer-events: none;
+  transform-origin: 50% 11%; rotate: -26deg; transition: rotate 900ms cubic-bezier(.2, .9, .25, 1.05);
+  filter: drop-shadow(0 10px 14px rgba(0, 0, 0, .55)); }
+.stage-cover.playing .stage-arm { rotate: 4deg; }
+.stage-arm .arm-base { fill: #1d1d1d; stroke: rgba(255, 255, 255, .12); stroke-width: 1.5; }
+.stage-arm .arm-pivot { fill: #d9d9d9; }
+.stage-arm .arm-rod { fill: none; stroke: #cfcfcf; stroke-width: 4.5; stroke-linecap: round; stroke-linejoin: round; }
+.stage-arm .arm-head { fill: #2a2a2a; stroke: rgba(var(--accent-rgb), .7); stroke-width: 1.5; }
+
+/* ── «Сцена»: свои штрихи ── */
+/* тонкая градиентная рамка цвета акцента у карточек */
+.stage-left .stage-card::after { content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1px; pointer-events: none; z-index: 4;
+  background: linear-gradient(145deg, rgba(var(--accent-rgb), .5), rgba(var(--accent-rgb), 0) 38%, rgba(var(--accent-rgb), 0) 62%, rgba(var(--accent-rgb), .28));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; }
+/* название трека — гигантский контурный «водяной знак» за текстом песни */
+.stage-right { position: relative; overflow: hidden; }
+.stage-mark { position: absolute; right: -2%; bottom: -4%; z-index: 0; max-width: 120%; pointer-events: none; user-select: none;
+  font-size: clamp(80px, 14vw, 220px); font-weight: 900; line-height: .9; letter-spacing: -.04em; white-space: nowrap; text-align: right;
+  color: transparent; -webkit-text-stroke: 1.5px rgba(var(--text-rgb), .07); animation: mark-in 900ms cubic-bezier(.2, .9, .25, 1) both; }
+@keyframes mark-in { from { opacity: 0; translate: 6% 0; } }
+.stage-right > *:not(.stage-mark) { position: relative; z-index: 1; }
+
+/* ── окно «Куда сохранить трек?» ── */
+.dl-backdrop { position: fixed; inset: 0; z-index: 120; background: rgba(0, 0, 0, .45); backdrop-filter: blur(6px); animation: fade-in calc(200ms * var(--anim, 1)) ease both; }
+.dl-backdrop.leaving { animation: fade-out calc(200ms * var(--anim, 1)) ease both; pointer-events: none; }
+.dl-panel { position: fixed; z-index: 121; left: 50%; top: 50%; translate: -50% -50%; width: min(460px, calc(100vw - 40px)); padding: 20px; border-radius: 20px;
+  background: rgba(18, 18, 18, .94); box-shadow: 0 40px 120px rgba(0, 0, 0, .6), inset 0 0 0 1px rgba(255, 255, 255, .07);
+  display: flex; flex-direction: column; gap: 14px; animation: dl-in calc(380ms * var(--anim, 1)) cubic-bezier(.2, .9, .25, 1.15) both; }
+@keyframes dl-in { from { opacity: 0; transform: translateY(18px) scale(.9); filter: blur(6px); } }
+.dl-panel.leaving { animation: dl-out calc(200ms * var(--anim, 1)) cubic-bezier(.5, 0, .75, 0) both; pointer-events: none; }
+@keyframes dl-out { to { opacity: 0; transform: translateY(12px) scale(.94); filter: blur(4px); } }
+.dl-head { display: flex; align-items: center; gap: 14px; }
+.dl-icon { width: 44px; height: 44px; border-radius: 14px; display: grid; place-items: center; flex: 0 0 auto; color: var(--accent);
+  background: rgba(var(--accent-rgb), .12); animation: dl-drop calc(700ms * var(--anim, 1)) cubic-bezier(.2, .9, .25, 1.3) 120ms both; }
+@keyframes dl-drop { 0% { transform: translateY(-10px); opacity: 0; } 60% { transform: translateY(3px); opacity: 1; } 100% { transform: none; } }
+.dl-titles { min-width: 0; }
+.dl-title { font-size: 16px; font-weight: 700; }
+.dl-track { margin-top: 3px; font-size: 12.5px; color: rgba(var(--text-rgb), .55); }
+.dl-path { display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 14px; border-radius: 12px; background: rgba(var(--text-rgb), .05);
+  box-shadow: inset 0 0 0 1px rgba(var(--text-rgb), .07); color: rgba(var(--text-rgb), .6); }
+.dl-path-t { flex: 1; min-width: 0; font-size: 12.5px; color: var(--text); direction: rtl; text-align: left; }
+.dl-browse { height: 30px; padding: 0 12px; border-radius: 9px; background: rgba(var(--text-rgb), .1); color: var(--text); font-size: 12.5px; font-weight: 600; transition: background 160ms; }
+.dl-browse:hover { background: rgba(var(--text-rgb), .16); }
+.dl-check { display: flex; align-items: center; gap: 10px; font-size: 13px; color: rgba(var(--text-rgb), .8); cursor: pointer; user-select: none; }
+.dl-check input { position: absolute; opacity: 0; pointer-events: none; }
+.dl-box { width: 20px; height: 20px; border-radius: 6px; flex: 0 0 auto; display: grid; place-items: center; color: transparent;
+  box-shadow: inset 0 0 0 1.5px rgba(var(--text-rgb), .3); transition: background 160ms, color 160ms, box-shadow 160ms, transform 260ms cubic-bezier(.2, .9, .25, 1.4); }
+.dl-check input:checked + .dl-box { background: var(--accent); color: var(--bg, #000); box-shadow: none; transform: scale(1.08); }
+.dl-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
+.dl-btn { height: 38px; padding: 0 16px; border-radius: 12px; display: inline-flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600;
+  background: rgba(var(--text-rgb), .08); color: var(--text); transition: background 160ms, transform 200ms cubic-bezier(.2, .9, .25, 1.3); }
+.dl-btn:hover { background: rgba(var(--text-rgb), .14); }
+.dl-btn:active { transform: scale(.96); }
+.dl-btn.primary { background: var(--accent); color: var(--bg, #000); }
+.dl-btn.primary:hover { filter: brightness(1.08); background: var(--accent); }
+
+/* ── «Сцена»: виджеты перелистываются в сторону ── */
+.stage-widget.swipe { overflow: hidden; touch-action: pan-y; cursor: grab; user-select: none; }
+.stage-widget.swipe:active { cursor: grabbing; }
+.stage-widget-body.sw-next { animation: sw-next calc(420ms * var(--anim, 1)) cubic-bezier(.2, .9, .25, 1) both; }
+.stage-widget-body.sw-prev { animation: sw-prev calc(420ms * var(--anim, 1)) cubic-bezier(.2, .9, .25, 1) both; }
+@keyframes sw-next { from { opacity: 0; transform: translateX(46px) scale(.97); filter: blur(4px); } }
+@keyframes sw-prev { from { opacity: 0; transform: translateX(-46px) scale(.97); filter: blur(4px); } }
+.stage-widget-title.sw-next { animation: sw-t-next calc(360ms * var(--anim, 1)) cubic-bezier(.2, .9, .25, 1) both; }
+.stage-widget-title.sw-prev { animation: sw-t-prev calc(360ms * var(--anim, 1)) cubic-bezier(.2, .9, .25, 1) both; }
+@keyframes sw-t-next { from { opacity: 0; transform: translateX(16px); } }
+@keyframes sw-t-prev { from { opacity: 0; transform: translateX(-16px); } }
+.stage-dot { transition: width 320ms cubic-bezier(.2, .9, .25, 1.2), background 200ms; }
+
+/* ── «Сцена»: оформления часов ── */
+.stage-clock-card { cursor: pointer; }
+.stage-clock-body { animation: stage-swap calc(380ms * var(--anim, 1)) cubic-bezier(.2, .9, .25, 1) both; }
+/* цифры: крупное время, мигающее двоеточие и секундная полоска */
+.clock-digits { position: relative; display: flex; align-items: baseline; font-size: 2.3em; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -.02em; padding-bottom: 8px; }
+.clock-colon { animation: colon-blink 1s steps(1) infinite; margin: 0 1px; }
+@keyframes colon-blink { 50% { opacity: .2; } }
+.clock-sec { position: absolute; left: 0; bottom: 0; height: 3px; width: 100%; border-radius: 3px; background: var(--accent); transform-origin: left; animation: sec-bar 60s linear infinite; }
+@keyframes sec-bar { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+/* стрелочные */
+.clock-analog { flex: 0 0 auto; overflow: visible; }
+.ca-face { fill: rgba(var(--text-rgb), .04); stroke: rgba(var(--text-rgb), .14); stroke-width: 1.5; }
+.ca-tick { stroke: rgba(var(--text-rgb), .3); stroke-width: 1.4; stroke-linecap: round; }
+.ca-tick.big { stroke: rgba(var(--text-rgb), .7); stroke-width: 2.2; }
+.ca-hour { stroke: var(--text); stroke-width: 3.4; stroke-linecap: round; }
+.ca-min { stroke: var(--text); stroke-width: 2.2; stroke-linecap: round; }
+.ca-sec { stroke: var(--accent); stroke-width: 1.2; stroke-linecap: round; }
+.ca-sec-g { transform-origin: 32px 32px; animation: ca-spin 60s linear infinite; }
+@keyframes ca-spin { to { transform: rotate(360deg); } }
+.ca-pin { fill: var(--accent); }
+/* перекидные: каждая цифра — карточка, смена — переворот */
+.clock-flip { display: flex; align-items: center; gap: 4px; font-size: 1.35em; font-weight: 800; font-variant-numeric: tabular-nums; perspective: 300px; }
+.flip-card { position: relative; width: 1.05em; height: 1.45em; display: grid; place-items: center; border-radius: 8px;
+  background: linear-gradient(rgba(var(--text-rgb), .12) 50%, rgba(var(--text-rgb), .08) 50%); box-shadow: inset 0 0 0 1px rgba(var(--text-rgb), .08);
+  animation: flip-in calc(560ms * var(--anim, 1)) cubic-bezier(.3, 1.4, .5, 1) both; transform-origin: 50% 50%; }
+.flip-card::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: rgba(0, 0, 0, .45); }
+@keyframes flip-in { from { transform: rotateX(-90deg); opacity: .3; } }
+.flip-sep { opacity: .5; margin: 0 1px; animation: colon-blink 1s steps(1) infinite; }
+/* шкала дня */
+.clock-bar-wrap { flex: 1; }
+.clock-bar { height: 6px; margin: 8px 0 6px; border-radius: 6px; background: rgba(var(--text-rgb), .1); overflow: hidden; }
+.clock-bar-fill { height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent2), var(--accent)); transition: width 1s ease; }
+
+/* ── «Для тебя»: миксы на главной ── */
+.foryou .section-title { display: flex; align-items: center; gap: 10px; }
+.foryou-ico { display: grid; color: var(--accent); }
+.foryou-refresh { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; color: var(--muted); transition: background var(--t-fast), color var(--t-fast);
+  animation: fy-spin calc(600ms * var(--anim, 1)) cubic-bezier(.2, .9, .25, 1) both; }
+.foryou-refresh:hover { background: rgba(var(--text-rgb), .08); color: var(--text); }
+@keyframes fy-spin { from { transform: rotate(-300deg); } }
+.mix-row { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(150px, 1fr); gap: 18px; overflow-x: auto; padding: 4px 2px 10px; scrollbar-width: thin; }
+.mix-card { text-align: left; min-width: 0; color: var(--text); animation: mix-in calc(520ms * var(--anim, 1)) cubic-bezier(.2, .9, .25, 1) both; animation-delay: calc(var(--i, 0) * 55ms); }
+@keyframes mix-in { from { opacity: 0; transform: translateY(14px) scale(.96); } }
+.mix-cover { position: relative; aspect-ratio: 1; border-radius: 14px; overflow: hidden; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 2px;
+  background: rgba(var(--text-rgb), .06); box-shadow: 0 12px 28px -14px rgba(0, 0, 0, .6); transition: transform 320ms cubic-bezier(.2, .9, .25, 1.15), box-shadow 320ms; }
+.mix-cover.single { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+.mix-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.mix-ph { display: grid; place-items: center; color: rgba(var(--text-rgb), .35); background: linear-gradient(145deg, rgba(var(--accent-rgb), .18), rgba(var(--text-rgb), .04)); }
+.mix-cover.single .mix-ph { background: radial-gradient(circle at 30% 25%, rgba(var(--accent-rgb), .45), rgba(var(--accent-rgb), .08) 70%); }
+.mix-play { position: absolute; right: 10px; bottom: 10px; width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--accent); color: var(--bg, #000); box-shadow: 0 8px 20px rgba(0, 0, 0, .45); opacity: 0; transform: translateY(8px) scale(.9);
+  transition: opacity 200ms, transform 300ms cubic-bezier(.2, .9, .25, 1.3); }
+.mix-card:hover .mix-cover { transform: translateY(-4px); box-shadow: 0 20px 36px -14px rgba(0, 0, 0, .7); }
+.mix-card:hover .mix-play { opacity: 1; transform: none; }
+.mix-name { margin-top: 10px; font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mix-sub { margin-top: 2px; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

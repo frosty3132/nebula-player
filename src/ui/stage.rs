@@ -6,7 +6,7 @@
 use super::actions::*;
 use super::chrome::{close_app, minimize_app, toggle_maximized_quiet};
 use super::icons::{Icon, LOGO_SVG};
-use super::player_bar::{Controls, Cover, Progress};
+use super::player_bar::{Controls, Cover};
 use super::state::*;
 use super::tracks::PlayingBars;
 use super::widgets::IconBtn;
@@ -153,9 +153,29 @@ pub fn StageCover() -> Element {
     let st = app_state();
     let art = st.now.read().as_ref().and_then(|t| t.art(ArtSize::Large));
     let lv = if st.settings.read().beat_glow { (*st.level.read() * 3.2).min(1.0) } else { 0.0 };
+    let playing = matches!(*st.pstate.read(), PlaybackState::Playing | PlaybackState::Buffering);
     rsx! {
-        div { class: "stage-card stage-cover", style: "--beat: {lv:.2};",
-            Cover { src: art, loading: "eager" }
+        div { class: if playing { "stage-card stage-cover playing" } else { "stage-card stage-cover" }, style: "--beat: {lv:.2};",
+            // фон карточки — та же обложка, сильно размытая
+            if let Some(a) = art.clone() {
+                div { class: "stage-cover-bg", style: "background-image: url('{a}');" }
+            }
+            // обложка — конверт, из него выезжает пластинка и крутится, пока играет музыка
+            // тонарм: опускается на пластинку, когда музыка играет
+            svg { class: "stage-arm", view_box: "0 0 60 200", "aria-hidden": "true",
+                circle { cx: "30", cy: "22", r: "16", class: "arm-base" }
+                circle { cx: "30", cy: "22", r: "6", class: "arm-pivot" }
+                path { d: "M30 22 L30 150 L18 176", class: "arm-rod" }
+                rect { x: "8", y: "170", width: "18", height: "26", rx: "4", class: "arm-head", transform: "rotate(-24 17 183)" }
+            }
+            div { class: "stage-sleeve",
+                div { class: "stage-vinyl",
+                    div { class: "stage-vinyl-label",
+                        style: if let Some(a) = art.clone() { format!("background-image: url('{a}');") } else { String::new() },
+                    }
+                }
+                Cover { src: art.clone(), loading: "eager" }
+            }
             button {
                 class: "stage-cover-btn",
                 title: "Во весь экран (F11)",
@@ -204,10 +224,83 @@ pub fn StagePlayer() -> Element {
                 button { class: "stage-round", title: "Без звука (M)", onclick: move |_| toggle_mute(st), Icon { name: vol_icon, size: 17 } }
             }
             Controls { order }
-            Progress {}
+            StageWave {}
         }
     }
 }
+
+/// Прогресс «Сцены» — волна из столбиков: у каждого трека своя форма
+/// (по его id), сыгранная часть светлая, под курсором тянется как ползунок.
+#[component]
+fn StageWave() -> Element {
+    const N: usize = 56;
+    let st = app_state();
+    let quarter = use_memo(move || *st.position.read() / 250);
+    let dur = *st.duration.read();
+    let mut drag = use_signal(|| None::<u64>);
+    let pos = drag.read().unwrap_or(quarter() * 250);
+    let pct = if dur > 0 { (pos as f64 / dur as f64 * 100.0).min(100.0) } else { 0.0 };
+    let id = st.now.read().as_ref().map(|t| t.id.clone()).unwrap_or_default();
+    let bars = use_memo(use_reactive!(|id| {
+        let mut seed = id.bytes().fold(0x9E37_79B9_7F4A_7C15u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01B3)) | 1;
+        let mut prev = 0.5f32;
+        (0..N)
+            .map(|i| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                let r = (seed % 1000) as f32 / 1000.0;
+                // сглаживаем соседей и приглушаем края — похоже на огибающую песни
+                let edge = (std::f32::consts::PI * (i as f32 + 0.5) / N as f32).sin().powf(0.35);
+                prev = prev * 0.45 + r * 0.55;
+                (0.18 + prev * 0.82 * edge).clamp(0.12, 1.0)
+            })
+            .collect::<Vec<f32>>()
+    }));
+    let head = ((pct / 100.0) * N as f64).floor() as usize;
+    rsx! {
+        div { class: "stage-wave-wrap", "data-el": "progress",
+            div { class: "stage-wave",
+                for (i, h) in bars.read().iter().enumerate() {
+                    i { key: "{i}", class: if i < head { "on" } else if i == head { "head" }, style: "--h: {h:.3};" }
+                }
+                input {
+                    r#type: "range",
+                    class: "stage-wave-input",
+                    title: "Перемотка",
+                    min: "0",
+                    max: "{dur.max(1)}",
+                    step: "250",
+                    value: "{pos}",
+                    oninput: move |e: FormEvent| {
+                        if let Ok(v) = e.value().parse::<f64>() {
+                            drag.set(Some(v as u64));
+                        }
+                    },
+                    onchange: move |e: FormEvent| {
+                        if let Ok(v) = e.value().parse::<f64>() {
+                            seek(st, v as u64);
+                        }
+                        let at = *drag.peek();
+                        spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            if *drag.peek() == at {
+                                drag.set(None);
+                            }
+                        });
+                    },
+                }
+            }
+            div { class: "stage-wave-times",
+                span { "{crate::model::fmt_time(pos)}" }
+                span { "−{crate::model::fmt_time(dur.saturating_sub(pos))}" }
+            }
+        }
+    }
+}
+
+/// Оформления часов «Сцены»: (id, название).
+pub const CLOCK_STYLES: &[(&str, &str)] = &[("ring", "Кольцо"), ("digital", "Цифры"), ("analog", "Стрелки"), ("flip", "Перекидные"), ("bar", "Шкала дня")];
 
 /// Часы: кольцо секунд, время и дата.
 #[component]
@@ -221,18 +314,91 @@ pub fn StageClock() -> Element {
         sync.set(Some(secs));
     }
     let delay = sync.read().unwrap_or(0);
+    let st = app_state();
+    let style = st.settings.read().clock_style.clone();
+    let (hh, mm) = c.first().and_then(|t| t.split_once(':')).map(|(h, m)| (h.to_string(), m.to_string())).unwrap_or_default();
+    let (h, m): (f32, f32) = (hh.parse().unwrap_or(0.0), mm.parse().unwrap_or(0.0));
+    let date = if c.len() >= 4 { format!("{} · {} {}", c[3], c[1], c[2]) } else { String::new() };
+    let day_pct = ((h * 60.0 + m) / 1440.0 * 100.0).clamp(0.0, 100.0);
+    // перекидные: ключ с цифрой — сменилась цифра, карточка переворачивается
+    let flip_cells: Vec<(String, String, bool)> = {
+        let mut v = Vec::new();
+        for (i, ch) in format!("{hh}{mm}").chars().enumerate() {
+            if i == 2 {
+                v.push(("sep".to_string(), ":".to_string(), true));
+            }
+            v.push((format!("{i}-{ch}"), ch.to_string(), false));
+        }
+        v
+    };
+    // щелчок по часам — следующее оформление (то же меняется в настройках)
+    let next_style = move |_| {
+        let mut s = st.settings;
+        let cur = s.peek().clock_style.clone();
+        let i = CLOCK_STYLES.iter().position(|(id, _)| *id == cur).unwrap_or(0);
+        s.write().clock_style = CLOCK_STYLES[(i + 1) % CLOCK_STYLES.len()].0.to_string();
+    };
+    let title = CLOCK_STYLES.iter().find(|(id, _)| *id == style).map(|(_, n)| *n).unwrap_or("Кольцо");
     rsx! {
-        div { class: "stage-card stage-widget",
+        div { class: "stage-card stage-widget stage-clock-card", title: "Оформление: {title} — щёлкните, чтобы сменить", onclick: next_style,
             div { class: "stage-widget-head", span { class: "stage-widget-title", "Часы" } }
-            div { class: "stage-clock-body",
-                svg { class: "stage-ring", view_box: "0 0 44 44", width: "56", height: "56", "aria-hidden": "true",
-                    circle { class: "stage-ring-bg", cx: "22", cy: "22", r: "19", fill: "none", stroke_width: "2.5" }
-                    circle { class: "stage-ring-fg", cx: "22", cy: "22", r: "19", fill: "none", stroke_width: "2.5", style: "animation-delay: -{delay}s;" }
-                }
-                if c.len() >= 4 {
-                    div { class: "stage-clock-text",
-                        div { class: "stage-clock-time", "{c[0]}" }
-                        div { class: "stage-clock-date", "{c[3]} · {c[1]} {c[2]}" }
+            for k in std::iter::once(style.clone()) {
+                div { key: "{k}", class: "stage-clock-body cs-{k}",
+                    match k.as_str() {
+                        "digital" => rsx! {
+                            div { class: "stage-clock-text",
+                                div { class: "clock-digits",
+                                    span { "{hh}" } span { class: "clock-colon", ":" } span { "{mm}" }
+                                    span { class: "clock-sec", style: "animation-delay: -{delay}s;" }
+                                }
+                                div { class: "stage-clock-date", "{date}" }
+                            }
+                        },
+                        "analog" => rsx! {
+                            svg { class: "clock-analog", view_box: "0 0 64 64", width: "64", height: "64", "aria-hidden": "true",
+                                circle { class: "ca-face", cx: "32", cy: "32", r: "30" }
+                                for i in 0..12 {
+                                    line { key: "{i}", class: if i % 3 == 0 { "ca-tick big" } else { "ca-tick" }, x1: "32", y1: "4", x2: "32", y2: if i % 3 == 0 { "10" } else { "8" }, transform: "rotate({i * 30} 32 32)" }
+                                }
+                                line { class: "ca-hour", x1: "32", y1: "32", x2: "32", y2: "17", transform: "rotate({(h % 12.0) * 30.0 + m * 0.5} 32 32)" }
+                                line { class: "ca-min", x1: "32", y1: "32", x2: "32", y2: "9", transform: "rotate({m * 6.0} 32 32)" }
+                                g { class: "ca-sec-g", style: "animation-delay: -{delay}s;",
+                                    line { class: "ca-sec", x1: "32", y1: "37", x2: "32", y2: "7" }
+                                }
+                                circle { class: "ca-pin", cx: "32", cy: "32", r: "2.4" }
+                            }
+                            div { class: "stage-clock-text",
+                                div { class: "stage-clock-time", "{hh}:{mm}" }
+                                div { class: "stage-clock-date", "{date}" }
+                            }
+                        },
+                        "flip" => rsx! {
+                            div { class: "stage-clock-text",
+                                div { class: "clock-flip",
+                                    for (key, ch, sep) in flip_cells.clone() {
+                                        span { key: "{key}", class: if sep { "flip-sep" } else { "flip-card" }, "{ch}" }
+                                    }
+                                }
+                                div { class: "stage-clock-date", "{date}" }
+                            }
+                        },
+                        "bar" => rsx! {
+                            div { class: "stage-clock-text clock-bar-wrap",
+                                div { class: "stage-clock-time", "{hh}:{mm}" }
+                                div { class: "clock-bar", div { class: "clock-bar-fill", style: "width: {day_pct}%;" } }
+                                div { class: "stage-clock-date", "{date} · прошло {day_pct:.0}% дня" }
+                            }
+                        },
+                        _ => rsx! {
+                            svg { class: "stage-ring", view_box: "0 0 44 44", width: "56", height: "56", "aria-hidden": "true",
+                                circle { class: "stage-ring-bg", cx: "22", cy: "22", r: "19", fill: "none", stroke_width: "2.5" }
+                                circle { class: "stage-ring-fg", cx: "22", cy: "22", r: "19", fill: "none", stroke_width: "2.5", style: "animation-delay: -{delay}s;" }
+                            }
+                            div { class: "stage-clock-text",
+                                div { class: "stage-clock-time", "{hh}:{mm}" }
+                                div { class: "stage-clock-date", "{date}" }
+                            }
+                        },
                     }
                 }
             }
@@ -311,7 +477,7 @@ fn StageEq() -> Element {
             div {
                 class: if on { "stage-eq-bands" } else { "stage-eq-bands off" },
                 title: "Открыть эквалайзер",
-                onclick: move |_| { let mut e = st.eq_open; e.set(true); },
+                onclick: move |_| super::player_bar::set_eq_open(st, true),
                 for i in 0..10usize {
                     {
                         let pct = ((bands[i] + 12.0) / 24.0 * 100.0).clamp(0.0, 100.0);
@@ -366,17 +532,40 @@ const WIDGETS: [&str; 3] = ["Визуализатор", "Эквалайзер", 
 #[component]
 pub fn StageWidgets() -> Element {
     let mut page = use_signal(|| 0usize);
+    // куда листали: следующий виджет въезжает справа, предыдущий — слева
+    let mut dir = use_signal(|| 1i8);
+    let mut drag_x = use_signal(|| None::<f64>);
     let p = page();
     let n = WIDGETS.len();
+    let mut go = move |to: usize, d: i8| {
+        dir.set(d);
+        page.set(to % n);
+    };
+    let sw = if dir() >= 0 { "sw-next" } else { "sw-prev" };
     rsx! {
-        div { class: "stage-card stage-widget",
+        div { class: "stage-card stage-widget swipe",
+            // свайп мышью: потянули влево — следующий, вправо — предыдущий
+            onpointerdown: move |e: PointerEvent| drag_x.set(Some(e.client_coordinates().x)),
+            onpointerup: move |e: PointerEvent| {
+                if let Some(x0) = drag_x.take() {
+                    let dx = e.client_coordinates().x - x0;
+                    if dx < -40.0 {
+                        go(p + 1, 1);
+                    } else if dx > 40.0 {
+                        go(p + n - 1, -1);
+                    }
+                }
+            },
+            onpointerleave: move |_| drag_x.set(None),
             div { class: "stage-widget-head",
-                span { class: "stage-widget-title", "{WIDGETS[p]}" }
+                for k in std::iter::once(p) {
+                    span { key: "{k}", class: "stage-widget-title {sw}", "{WIDGETS[p]}" }
+                }
                 div { class: "flex1" }
-                button { class: "stage-arrow", title: "Назад", onclick: move |_| page.set((p + n - 1) % n), Icon { name: "back", size: 14 } }
-                button { class: "stage-arrow", title: "Дальше", onclick: move |_| page.set((p + 1) % n), Icon { name: "forward", size: 14 } }
+                button { class: "stage-arrow", title: "Назад", onclick: move |_| go(p + n - 1, -1), Icon { name: "back", size: 14 } }
+                button { class: "stage-arrow", title: "Дальше", onclick: move |_| go(p + 1, 1), Icon { name: "forward", size: 14 } }
             }
-            div { key: "{p}", class: "stage-widget-body",
+            div { key: "{p}", class: "stage-widget-body {sw}",
                 match p {
                     0 => rsx! { StageViz {} },
                     1 => rsx! { StageEq {} },
@@ -385,7 +574,8 @@ pub fn StageWidgets() -> Element {
             }
             div { class: "stage-dots",
                 for i in 0..n {
-                    button { key: "{i}", class: if i == p { "stage-dot active" } else { "stage-dot" }, title: "{WIDGETS[i]}", onclick: move |_| page.set(i) }
+                    button { key: "{i}", class: if i == p { "stage-dot active" } else { "stage-dot" }, title: "{WIDGETS[i]}",
+                        onclick: move |_| go(i, if i >= p { 1 } else { -1 }) }
                 }
             }
         }

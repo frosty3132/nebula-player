@@ -11,9 +11,18 @@ use dioxus::desktop::tao::window::ResizeDirection;
 use dioxus::desktop::window;
 use dioxus::prelude::*;
 
-/// Сохранить размер/положение окна и состояние, затем закрыть — сразу, без
-/// анимации ухода.
+/// Крестик: с настройкой «Сворачивать в трей» окно прячется к часам у
+/// панели задач (музыка играет дальше), иначе приложение закрывается.
 pub fn close_app(state: AppState) {
+    if state.settings.peek().close_to_tray {
+        hide_to_tray(state);
+    } else {
+        quit_app(state);
+    }
+}
+
+/// Запомнить размер и положение окна и сохранить всё на диск.
+fn save_state(state: AppState) {
     let mut st = state;
     {
         let w = window();
@@ -33,8 +42,23 @@ pub fn close_app(state: AppState) {
     st.settings.peek().save();
     st.library.peek().save();
     save_session(state);
+}
+
+/// Спрятать окно в трей. Состояние сохраняем сразу — на случай, если
+/// Windows завершит приложение, пока оно в фоне.
+pub fn hide_to_tray(state: AppState) {
+    save_state(state);
+    window().set_visible(false);
+}
+
+/// Закрыть приложение совсем — сразу, без анимации ухода.
+pub fn quit_app(state: AppState) {
+    save_state(state);
     // островок — отдельное окно: без него приложение не завершилось бы
     super::desk_island::close_now();
+    super::tray_menu::close();
+    // с «трей вместо закрытия» окно лишь пряталось бы
+    window().set_close_behavior(dioxus::desktop::WindowCloseBehaviour::WindowCloses);
     window().close();
 }
 

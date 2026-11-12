@@ -340,6 +340,8 @@ pub fn FullscreenLyrics(leaving: bool) -> Element {
     use super::stage::{StageClock, StageCover, StagePlayer, StageTop, StageWidgets};
     let st = app_state();
     let lyr = st.lyrics.read().clone();
+    // название трека — крупным прозрачным «водяным знаком» за текстом
+    let mark = st.now.read().as_ref().map(|t| t.title.clone()).unwrap_or_default();
     let (sync_label, synced) = match &lyr {
         LyricsState::Found(l) if l.is_synced() => ("Синхронизировано", true),
         LyricsState::Found(_) => ("Без синхронизации", false),
@@ -348,6 +350,8 @@ pub fn FullscreenLyrics(leaving: bool) -> Element {
     };
     rsx! {
         div { class: if leaving { "fs-lyrics stage leaving" } else { "fs-lyrics stage" }, "data-el": "lyrics_full",
+            // медленное сияние цвета обложки за всей сценой
+            div { class: "stage-aurora", "aria-hidden": "true", i {} i {} i {} }
             StageTop {}
             div { class: "stage-body",
                 div { class: "stage-left",
@@ -359,6 +363,7 @@ pub fn FullscreenLyrics(leaving: bool) -> Element {
                     }
                 }
                 div { class: "stage-right",
+                    div { class: "stage-mark", "aria-hidden": "true", "{mark}" }
                     div { class: "stage-lyrics-head",
                         span { class: "stage-widget-title", "Текст" }
                         span { class: if synced { "stage-tag on" } else { "stage-tag" }, span { class: "stage-tag-dot" } "{sync_label}" }

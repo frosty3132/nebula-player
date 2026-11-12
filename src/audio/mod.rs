@@ -6,6 +6,7 @@
 mod decode;
 mod dsp;
 mod hls;
+pub mod download;
 mod output;
 mod player;
 mod resample;

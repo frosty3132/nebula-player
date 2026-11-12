@@ -154,7 +154,13 @@ pub fn Home() -> Element {
             for entry in sections.iter().filter(|e| e.visible) {
                 match entry.id.as_str() {
                     "hero" => rsx! { Hero { key: "{entry.id}" } },
-                    "continue" => rsx! { ContinueCard { key: "{entry.id}" } },
+                    // «Для тебя» — сразу под «Продолжить»
+                    "continue" => rsx! {
+                        Fragment { key: "{entry.id}",
+                            ContinueCard {}
+                            ForYouSection {}
+                        }
+                    },
                     "listening" => rsx! { ListeningSection { key: "{entry.id}" } },
                     "recent" => rsx! { RecentSection { key: "{entry.id}" } },
                     "related" => rsx! { RelatedSection { key: "{entry.id}" } },
@@ -1153,6 +1159,177 @@ pub fn SoundCloudPage() -> Element {
                 }
             }
             {pane}
+        }
+    }
+}
+
+
+// ── «Для тебя»: миксы из своей библиотеки ──
+
+/// Микс: название, подпись (исполнители), обложки для коллажа и треки.
+#[derive(Clone, PartialEq)]
+struct Mix {
+    id: String,
+    name: String,
+    sub: String,
+    arts: Vec<Option<String>>,
+    tracks: Vec<Track>,
+    single: bool,
+}
+
+/// Перемешать детерминированно: одно и то же зерно — один и тот же порядок.
+fn seeded_shuffle<T>(v: &mut [T], seed: u64) {
+    let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    for i in (1..v.len()).rev() {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        v.swap(i, (x % (i as u64 + 1)) as usize);
+    }
+}
+
+/// Основной исполнитель: «A feat. B», «A, B», «A & B» → «a».
+fn main_artist(a: &str) -> String {
+    let low = a.to_lowercase();
+    let cut = [" feat", " ft.", " ft ", ",", " & ", " x ", " и "].iter().filter_map(|s| low.find(s)).min().unwrap_or(low.len());
+    low[..cut].trim().to_string()
+}
+
+/// Миксы на сегодня: «Для тебя» (что слушаете больше всего и любите) и
+/// «Микс дня 1…5» — исполнители разложены по миксам, внутри перемешано.
+/// Всё строится из своей библиотеки: избранное, история, плейлисты, своя музыка.
+fn build_mixes(lib: &crate::library::LibraryData, local: &[Track], seed: u64) -> Vec<Mix> {
+    use std::collections::HashMap;
+    let mut seen = std::collections::HashSet::new();
+    let mut pool: Vec<Track> = Vec::new();
+    let pl_tracks = lib.playlists.iter().flat_map(|p| p.tracks.iter());
+    for t in lib.favorites.iter().chain(lib.history.iter()).chain(pl_tracks).chain(local.iter().take(2000)) {
+        if seen.insert(t.id.clone()) {
+            pool.push(t.clone());
+        }
+    }
+    if pool.len() < 6 {
+        return Vec::new();
+    }
+    let fav: std::collections::HashSet<&str> = lib.favorites.iter().map(|t| t.id.as_str()).collect();
+    let score = |t: &Track| -> u64 {
+        let ms = lib.listening.by_track_ms.get(&t.id).copied().unwrap_or(0);
+        ms / 1000 + if fav.contains(t.id.as_str()) { 600 } else { 0 } + 1
+    };
+    let arts_of = |ts: &[Track], n: usize| -> Vec<Option<String>> {
+        let mut out: Vec<Option<String>> = Vec::new();
+        let mut used = std::collections::HashSet::new();
+        for t in ts {
+            if let Some(a) = t.art(ArtSize::Medium) {
+                if used.insert(a.clone()) {
+                    out.push(Some(a));
+                }
+            }
+            if out.len() >= n {
+                break;
+            }
+        }
+        while out.len() < n {
+            out.push(None);
+        }
+        out
+    };
+    let mut mixes = Vec::new();
+
+    // «Для тебя»: самое слушаемое и любимое, перемешано
+    let mut top = pool.clone();
+    top.sort_by_key(|t| std::cmp::Reverse(score(t)));
+    top.truncate(40);
+    seeded_shuffle(&mut top, seed);
+    mixes.push(Mix { id: "for-you".into(), name: "Для тебя".into(), sub: "На основе ваших вкусов".into(), arts: arts_of(&top, 1), tracks: top, single: true });
+
+    // исполнители по весу, разложены по миксам
+    let mut by_artist: HashMap<String, (String, u64, Vec<Track>)> = HashMap::new();
+    for t in &pool {
+        let key = main_artist(&t.artist);
+        if key.is_empty() {
+            continue;
+        }
+        let e = by_artist.entry(key).or_insert_with(|| (t.artist.clone(), 0, Vec::new()));
+        e.1 += score(t);
+        e.2.push(t.clone());
+    }
+    let mut artists: Vec<(String, u64, Vec<Track>)> = by_artist.into_values().collect();
+    artists.sort_by_key(|a| std::cmp::Reverse(a.1));
+    let n_mix = 5usize.min((pool.len() / 6).max(1));
+    let mut buckets: Vec<(Vec<String>, Vec<Track>)> = vec![(Vec::new(), Vec::new()); n_mix];
+    for (i, (name, _, tracks)) in artists.into_iter().enumerate() {
+        let b = &mut buckets[i % n_mix];
+        if b.0.len() < 4 {
+            b.0.push(name);
+        }
+        b.1.extend(tracks);
+    }
+    for (k, (names, mut tracks)) in buckets.into_iter().enumerate() {
+        if tracks.len() < 3 {
+            continue;
+        }
+        seeded_shuffle(&mut tracks, seed.wrapping_add(k as u64 * 7919 + 1));
+        tracks.truncate(50);
+        mixes.push(Mix {
+            id: format!("daily-{k}"),
+            name: format!("Микс дня {}", k + 1),
+            sub: names.join(", "),
+            arts: arts_of(&tracks, 4),
+            tracks,
+            single: false,
+        });
+    }
+    mixes
+}
+
+/// Раздел «Для тебя» на главной.
+#[component]
+fn ForYouSection() -> Element {
+    let st = app_state();
+    // зерно меняется раз в сутки (миксы «на сегодня») и по кнопке «Обновить»
+    let day = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() / 86_400).unwrap_or(0);
+    let mut bump = use_signal(|| 0u64);
+    let mixes = use_memo(move || build_mixes(&st.library.read(), &st.local.read(), day.wrapping_mul(31).wrapping_add(bump())));
+    let b = bump();
+    if mixes.read().is_empty() {
+        return rsx! {};
+    }
+    rsx! {
+        section { class: "section foryou",
+            div { class: "section-head",
+                h2 { class: "section-title", "data-el": "section_title",
+                    span { class: "foryou-ico", Icon { name: "sparkles", size: 18 } }
+                    "Для тебя"
+                }
+                for k in std::iter::once(b) {
+                    button { key: "{k}", class: "foryou-refresh", title: "Собрать миксы заново", onclick: move |_| bump += 1,
+                        Icon { name: "refresh", size: 16 }
+                    }
+                }
+            }
+            div { class: "mix-row",
+                for (i, m) in mixes.read().iter().enumerate() {
+                    button { key: "{m.id}-{b}", class: "mix-card", style: "--i: {i};",
+                        title: "Включить «{m.name}»",
+                        onclick: {
+                            let (tracks, name) = (m.tracks.clone(), m.name.clone());
+                            move |_| play_list(st, tracks.clone(), 0, &name)
+                        },
+                        div { class: if m.single { "mix-cover single" } else { "mix-cover" },
+                            for (j, a) in m.arts.iter().enumerate() {
+                                match a {
+                                    Some(src) => rsx! { img { key: "{j}", src: "{src}", alt: "", draggable: false, loading: "lazy" } },
+                                    None => rsx! { div { key: "{j}", class: "mix-ph", Icon { name: "music", size: 18 } } },
+                                }
+                            }
+                            span { class: "mix-play", Icon { name: "play", size: 20 } }
+                        }
+                        div { class: "mix-name", "{m.name}" }
+                        div { class: "mix-sub", "{m.sub}" }
+                    }
+                }
+            }
         }
     }
 }

@@ -159,6 +159,16 @@ pub struct Settings {
     pub player_collapsed: bool,
     /// Свёрнутый плеер — островок на рабочем столе поверх всех окон Windows.
     pub island_desktop: bool,
+    /// Крестик прячет Nebula в трей (музыка играет дальше), а не закрывает.
+    pub close_to_tray: bool,
+    /// Город для погоды в островке (пусто — погода не показывается).
+    pub weather_city: String,
+    /// Папка для скачанных треков (пусто — системная «Загрузки»).
+    pub download_dir: Option<String>,
+    /// Спрашивать, куда сохранить, при каждом скачивании.
+    pub download_ask: bool,
+    /// Оформление часов в «Сцене»: ring, digital, analog, flip, bar.
+    pub clock_style: String,
     pub sidebar_collapsed: bool,
 }
 
@@ -229,6 +239,11 @@ impl Default for Settings {
             queue_open: false,
             player_collapsed: false,
             island_desktop: true,
+            close_to_tray: true,
+            weather_city: String::new(),
+            download_dir: None,
+            download_ask: true,
+            clock_style: "ring".into(),
             sidebar_collapsed: false,
         }
     }

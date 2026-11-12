@@ -44,6 +44,8 @@ pub struct IslandSnap {
     pub art: Option<String>,
     pub playing: bool,
     pub pos_ms: u64,
+    /// Когда замерена позиция: дальше островок ведёт время сам.
+    pub pos_at: Option<Instant>,
     pub dur_ms: u64,
     pub lyric: Option<String>,
     pub liked: bool,
@@ -57,6 +59,8 @@ pub struct IslandSnap {
     pub accent: Option<String>,
     /// Следующий трек в очереди: название и исполнитель.
     pub next: Option<(String, String)>,
+    /// Город для погоды в спокойном островке (из настроек; пусто — без погоды).
+    pub weather_city: String,
     /// Эквалайзер: включён ли, полосы (дБ) и выбранный пресет.
     pub eq_enabled: bool,
     pub eq_bands: [f32; 10],
@@ -77,6 +81,8 @@ pub enum IslandCmd {
     Mute,
     /// Островку нужен список треков для поиска.
     WantCorpus,
+    /// Островку нужны плейлисты.
+    WantPlaylists,
     /// Играть список с указанного трека (выбор в поиске).
     Play(Vec<Track>, usize),
     /// Эквалайзер: включить/выключить, пресет, одна полоса (дБ).
@@ -99,6 +105,83 @@ static SNAP: Mutex<Option<IslandSnap>> = Mutex::new(None);
 static CMDS: Mutex<Vec<IslandCmd>> = Mutex::new(Vec::new());
 static CORPUS: Mutex<Option<Corpus>> = Mutex::new(None);
 static CORPUS_GEN: AtomicU32 = AtomicU32::new(0);
+static PLAYLISTS: Mutex<Option<Vec<PlItem>>> = Mutex::new(None);
+/// Синхронный текст текущего трека: ключ (трек, число строк, сдвиг),
+/// строки (время, текст) и сдвиг в мс.
+static LYRICS: Mutex<Option<(String, Vec<(u64, String)>, i64)>> = Mutex::new(None);
+
+/// Обновить текст для островка; `make` вызывается, только если он сменился.
+pub fn publish_lyrics(key: &str, make: impl FnOnce() -> (Vec<(u64, String)>, i64)) {
+    let mut l = LYRICS.lock();
+    if l.as_ref().is_some_and(|(k, _, _)| k == key) {
+        return;
+    }
+    let (lines, off) = make();
+    *l = Some((key.to_string(), lines, off));
+    CORPUS_GEN.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Позиция трека сейчас: замер из главного окна плюс прошедшее с него время.
+fn live_pos(s: &IslandSnap) -> u64 {
+    match (s.playing, s.pos_at) {
+        (true, Some(t)) => (s.pos_ms + t.elapsed().as_millis() as u64).min(s.dur_ms.max(s.pos_ms)),
+        _ => s.pos_ms,
+    }
+}
+
+/// Строка текста под позицией `pos` (уже со сдвигом): индекс последней
+/// строки, которая началась.
+fn line_at(lines: &[(u64, String)], pos: i64) -> Option<usize> {
+    if pos < 0 {
+        return None;
+    }
+    let n = lines.partition_point(|(t, _)| (*t as i64) <= pos);
+    n.checked_sub(1)
+}
+
+/// Слова строки с задержкой и длительностью «заливки» (караоке): время
+/// строки делится между словами по их длине.
+fn word_times(text: &str, dur_ms: u64) -> Vec<(String, u64, u64)> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let total: usize = words.iter().map(|w| w.chars().count() + 1).sum::<usize>().max(1);
+    // заливка заканчивается чуть раньше следующей строки
+    let span = (dur_ms as f64 * 0.88).clamp(300.0, 7000.0);
+    let mut acc = 0usize;
+    words
+        .iter()
+        .map(|w| {
+            let len = w.chars().count() + 1;
+            let dl = (acc as f64 / total as f64 * span) as u64;
+            let d = ((len as f64 / total as f64) * span).max(60.0) as u64;
+            acc += len;
+            (w.to_string(), dl, d)
+        })
+        .collect()
+}
+
+/// Плейлист для островка: избранное, свои плейлисты, недавние, своя музыка.
+#[derive(Clone)]
+pub struct PlItem {
+    pub id: String,
+    pub name: String,
+    pub icon: &'static str,
+    pub tracks: Vec<Track>,
+}
+
+pub fn publish_playlists(v: Vec<PlItem>) {
+    *PLAYLISTS.lock() = Some(v);
+    CORPUS_GEN.fetch_add(1, Ordering::Relaxed);
+}
+
+/// «1 трек», «3 трека», «12 треков».
+fn tracks_word(n: usize) -> String {
+    let w = match (n % 10, n % 100) {
+        (1, x) if x != 11 => "трек",
+        (2..=4, x) if !(12..=14).contains(&x) => "трека",
+        _ => "треков",
+    };
+    format!("{n} {w}")
+}
 /// Островок должен доиграть уход (втянуться в край экрана) перед закрытием.
 static LEAVE: AtomicBool = AtomicBool::new(false);
 /// Когда островку «приземлиться»: капля из главного окна долетает до края.
@@ -136,6 +219,98 @@ fn send(cmd: IslandCmd) {
     CMDS.lock().push(cmd);
 }
 
+// ── буфер обмена, таймер и уведомления островка ──
+
+use super::island_sys::{self as sys, ClipData};
+
+#[derive(Clone)]
+struct ClipItem {
+    id: u64,
+    data: ClipData,
+    at: Instant,
+}
+
+/// История буфера (новые сверху), живёт, пока запущено приложение.
+static CLIP_HIST: Mutex<Vec<ClipItem>> = Mutex::new(Vec::new());
+/// Последнее изменение буфера, которое мы уже видели.
+static CLIP_SEEN: AtomicU32 = AtomicU32::new(0);
+static CLIP_ID: AtomicU32 = AtomicU32::new(1);
+/// Таймер: когда закончится и на сколько ставили (мс).
+static TIMER: Mutex<Option<(Instant, u64)>> = Mutex::new(None);
+
+fn remember_clip(d: ClipData) {
+    let mut h = CLIP_HIST.lock();
+    h.retain(|x| x.data != d);
+    h.insert(0, ClipItem { id: CLIP_ID.fetch_add(1, Ordering::Relaxed) as u64, data: d, at: Instant::now() });
+    // картинки тяжёлые — держим только последние несколько
+    let mut imgs = 0;
+    h.retain(|x| {
+        if matches!(x.data, ClipData::Image { .. }) {
+            imgs += 1;
+            imgs <= 6
+        } else {
+            true
+        }
+    });
+    h.truncate(40);
+}
+
+/// В буфер записали мы сами — «Скопировано» показывать не нужно.
+fn mark_own_clip() {
+    CLIP_SEEN.store(sys::clipboard_seq(), Ordering::Relaxed);
+}
+
+fn preview(s: &str, n: usize) -> String {
+    let one = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one.chars().count() > n {
+        format!("{}…", one.chars().take(n).collect::<String>())
+    } else {
+        one
+    }
+}
+
+fn ago(t: Instant) -> String {
+    let s = t.elapsed().as_secs();
+    if s < 60 {
+        "только что".into()
+    } else if s < 3600 {
+        format!("{} мин назад", s / 60)
+    } else {
+        format!("{} ч назад", s / 3600)
+    }
+}
+
+/// Момент `Instant` в миллисекундах эпохи — для обратного отсчёта в странице.
+fn epoch_ms(at: Instant) -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let (now_s, now_i) = (SystemTime::now(), Instant::now());
+    let t = if at >= now_i { now_s + (at - now_i) } else { now_s - (now_i - at) };
+    t.duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+fn fmt_min(ms: u64) -> String {
+    format!("{} мин", (ms / 60_000).max(1))
+}
+
+/// Уведомление на островке: «Скопировано», цвет пипетки, «Время вышло»…
+#[derive(Clone, Debug, PartialEq)]
+struct Note {
+    /// Выражение мини-лица: "happy", "alarm" или обычное.
+    face: &'static str,
+    icon: &'static str,
+    title: String,
+    sub: String,
+    swatch: Option<String>,
+    /// Уведомление таймера: висит, пока не закроют, и с кнопками.
+    timer: bool,
+}
+
+impl Note {
+    fn info(face: &'static str, icon: &'static str, title: impl Into<String>, sub: impl Into<String>) -> Self {
+        Note { face, icon, title: title.into(), sub: sub.into(), swatch: None, timer: false }
+    }
+}
+
 pub fn is_open() -> bool {
     ISLAND.with(|i| i.borrow().is_some()) || OPENING.get()
 }
@@ -151,9 +326,24 @@ enum Mode {
     Card,
     Search,
     Eq,
+    Lists,
+    Note,
+    Tools,
+    Clip,
 }
 
-const ALL_MODES: [Mode; 6] = [Mode::Compact, Mode::PeekTrack, Mode::PeekVolume, Mode::Card, Mode::Search, Mode::Eq];
+const ALL_MODES: [Mode; 10] = [
+    Mode::Compact,
+    Mode::PeekTrack,
+    Mode::PeekVolume,
+    Mode::Card,
+    Mode::Search,
+    Mode::Eq,
+    Mode::Lists,
+    Mode::Note,
+    Mode::Tools,
+    Mode::Clip,
+];
 
 impl Mode {
     /// Размер самой капли в логических пикселях — те же числа, что в ISLAND_CSS.
@@ -162,9 +352,13 @@ impl Mode {
             Mode::Compact => (300.0, 40.0),
             Mode::PeekTrack => (364.0, 58.0),
             Mode::PeekVolume => (320.0, 46.0),
-            Mode::Card => (404.0, 230.0),
+            Mode::Card => (690.0, 290.0),
             Mode::Search => (404.0, 412.0),
             Mode::Eq => (404.0, 300.0),
+            Mode::Lists => (404.0, 412.0),
+            Mode::Note => (400.0, 58.0),
+            Mode::Tools => (404.0, 372.0),
+            Mode::Clip => (404.0, 412.0),
         }
     }
 
@@ -187,6 +381,10 @@ impl Mode {
             Mode::Card => "m-card",
             Mode::Search => "m-search",
             Mode::Eq => "m-eq",
+            Mode::Lists => "m-lists",
+            Mode::Note => "m-note",
+            Mode::Tools => "m-tools",
+            Mode::Clip => "m-clip",
         }
     }
 }
@@ -273,6 +471,16 @@ fn place(w: &DesktopContext, size: (f64, f64)) {
         unsafe {
             let rgn = CreateRectRgn(x0, 0, x0 + rw, rh);
             SetWindowRgn(win.hwnd() as _, rgn, 1);
+            // Прозрачность окна держится на «размытии за окном» с пустой
+            // областью. После смены региона Windows размывала всё за видимой
+            // частью окна, и экран вокруг капли мылился. Задаём пустую
+            // область размытия заново.
+            use windows_sys::Win32::Graphics::Dwm::{DwmEnableBlurBehindWindow, DWM_BB_BLURREGION, DWM_BB_ENABLE, DWM_BLURBEHIND};
+            use windows_sys::Win32::Graphics::Gdi::DeleteObject;
+            let empty = CreateRectRgn(0, 0, -1, -1);
+            let bb = DWM_BLURBEHIND { dwFlags: DWM_BB_ENABLE | DWM_BB_BLURREGION, fEnable: 1, hRgnBlur: empty, fTransitionOnMaximized: 0 };
+            DwmEnableBlurBehindWindow(win.hwnd() as _, &bb);
+            DeleteObject(empty);
         }
     }
     #[cfg(not(windows))]
@@ -667,6 +875,29 @@ while (true) {
 }
 "#;
 
+/// Глаза мини-лица смотрят туда, где курсор.
+const FACE_JS: &str = r#"
+while (true) {
+  const [x, y] = await dioxus.recv();
+  const r = document.querySelector(".isl");
+  if (r) { r.style.setProperty("--lx", x.toFixed(3)); r.style.setProperty("--ly", y.toFixed(3)); }
+}
+"#;
+
+/// Часы и обратный отсчёт таймера обновляет сама страница — без перерисовок.
+const TICK_JS: &str = r#"
+const pad = (n) => String(n).padStart(2, "0");
+setInterval(() => {
+  const d = new Date();
+  for (const e of document.querySelectorAll(".isl-clock")) e.textContent = pad(d.getHours()) + ":" + pad(d.getMinutes());
+  for (const e of document.querySelectorAll("[data-end]")) {
+    const s = Math.ceil(Math.max(0, +e.dataset.end - Date.now()) / 1000);
+    e.textContent = Math.floor(s / 60) + ":" + pad(s % 60);
+  }
+}, 250);
+await new Promise(() => {});
+"#;
+
 fn fmt(ms: u64) -> String {
     let s = ms / 1000;
     format!("{}:{:02}", s / 60, s % 60)
@@ -754,6 +985,41 @@ fn IslandRoot() -> Element {
     // эквалайзер, пока его крутят здесь: (включён, полосы, пресет) — сводка
     // из главного окна приходит с запаздыванием и дёргала бы ползунки
     let mut eq_local = use_signal(|| None::<(bool, [f32; 10], String)>);
+    // открытый плейлист в режиме «Плейлисты»
+    let mut pl_open = use_signal(|| None::<String>);
+    // уведомление, подтверждение опасных кнопок, история буфера, погода
+    let mut note = use_signal(|| None::<Note>);
+    let mut confirm = use_signal(|| None::<&'static str>);
+    let mut clip_q = use_signal(String::new);
+    let mut clip_gen = use_signal(|| 0u32);
+    let mut weather = use_signal(|| None::<(&'static str, i32)>);
+    let mut fs_away = use_signal(|| false);
+    let mut timer_view = use_signal(|| TIMER.lock().map(|(end, total)| (epoch_ms(end), total)));
+    // текущая строка текста: (индекс, сколько мс строки уже прошло, когда она
+    // сменилась) — от этого считается караоке-заливка слов
+    let mut ly_line = use_signal(|| None::<(usize, u64)>);
+    // строки текста сверяются с собственными часами островка ~25 раз в секунду
+    use_future(move || async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            let s = snap.peek().clone();
+            let cur = {
+                let l = LYRICS.lock();
+                match l.as_ref() {
+                    Some((k, lines, off)) if !lines.is_empty() && k.starts_with(&format!("{}:", s.track_id)) => {
+                        // чуть заранее: пока строка дорисуется, голос уже звучит
+                        let pos = live_pos(&s) as i64 + off + 60;
+                        line_at(lines, pos).map(|i| (i, (pos - lines[i].0 as i64).max(0) as u64))
+                    }
+                    _ => None,
+                }
+            };
+            let old = *ly_line.peek();
+            if old.map(|o| o.0) != cur.map(|c| c.0) {
+                ly_line.set(cur);
+            }
+        }
+    });
 
     use_hook(|| {
         super::pages::VISUALIZERS.fetch_add(1, Ordering::Relaxed);
@@ -844,7 +1110,7 @@ fn IslandRoot() -> Element {
             if *corpus_gen.peek() != cg {
                 corpus_gen.set(cg);
             }
-            if tick % 3 == 0 {
+            if true {
                 if let Some(s) = SNAP.lock().clone() {
                     let old = snap.peek().clone();
                     if old != s {
@@ -896,6 +1162,108 @@ fn IslandRoot() -> Element {
             }
         }
     });
+    // уведомление: показываем из спокойных состояний; таймер — всегда
+    let mut show_note = move |n: Note, ms: u64| {
+        let m = *mode.peek();
+        if !n.timer && !matches!(m, Mode::Compact | Mode::PeekTrack | Mode::PeekVolume | Mode::Note) {
+            return;
+        }
+        // «Время вышло» висит, пока его не закроют, — другие уведомления его не перебивают
+        if !n.timer && m == Mode::Note && note.peek().as_ref().is_some_and(|x| x.timer) {
+            return;
+        }
+        let timer = n.timer;
+        note.set(Some(n));
+        if timer {
+            let g = *peek_gen.peek() + 1;
+            peek_gen.set(g);
+            go(Mode::Note);
+        } else {
+            peek(Mode::Note, ms);
+        }
+    };
+    // часы и обратный отсчёт таймера идут в самой странице
+    use_hook(|| {
+        let _ = document::eval(TICK_JS);
+    });
+    use_future(move || async move {
+        // то, что лежало в буфере до появления островка, не показываем
+        CLIP_SEEN.store(sys::clipboard_seq(), Ordering::Relaxed);
+        let face = document::eval(FACE_JS);
+        let mut tick = 0u32;
+        let mut last_city = String::new();
+        let mut weather_at: Option<Instant> = None;
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            tick = tick.wrapping_add(1);
+            let w = window();
+            // мини-лицо следит глазами за курсором
+            if let (Ok(c), Ok(p)) = (w.window.cursor_position(), w.window.outer_position()) {
+                let scale = w.window.scale_factor();
+                let cx = p.x as f64 + w.window.outer_size().width as f64 / 2.0;
+                let cy = p.y as f64 + 20.0 * scale;
+                let lx = ((c.x - cx) / (520.0 * scale)).clamp(-1.0, 1.0);
+                let ly = ((c.y - cy) / (420.0 * scale)).clamp(-1.0, 1.0);
+                let _ = face.send((lx, ly));
+                // кто-то на весь экран (кино, игра) — островок уходит за край и не
+                // ловит мышь; вернётся, если подвести курсор к верхнему краю
+                if tick % 5 == 0 {
+                    let half = (Mode::Compact.pill().0 / 2.0 + 40.0) * scale;
+                    let near_top = c.y <= p.y as f64 + 3.0 * scale && (c.x - cx).abs() < half;
+                    let away = sys::fullscreen_busy() && !near_top && *mode.peek() == Mode::Compact;
+                    if away != *fs_away.peek() {
+                        fs_away.set(away);
+                        place(&w, if away { (0.0, 0.0) } else { mode.peek().window() });
+                    }
+                }
+            }
+            // буфер обмена: «Скопировано» и история
+            if tick % 4 == 0 {
+                let seq = sys::clipboard_seq();
+                if seq != CLIP_SEEN.load(Ordering::Relaxed) {
+                    CLIP_SEEN.store(seq, Ordering::Relaxed);
+                    if let Some(d) = sys::read() {
+                        let n = match &d {
+                            ClipData::Text(t) => Note::info("happy", "copy", "Скопировано", preview(t, 64)),
+                            ClipData::Image { w, h, .. } => Note::info("happy", "image", "Изображение скопировано", format!("{w} × {h}")),
+                        };
+                        let empty = matches!(&d, ClipData::Text(t) if t.trim().is_empty());
+                        if !empty {
+                            remember_clip(d);
+                            *clip_gen.write() += 1;
+                            show_note(n, 2600);
+                        }
+                    }
+                }
+            }
+            // таймер
+            let done = TIMER.lock().filter(|(end, _)| Instant::now() >= *end);
+            if let Some((_, total)) = done {
+                *TIMER.lock() = None;
+                timer_view.set(None);
+                sys::beep();
+                show_note(
+                    Note { face: "alarm", icon: "timer", title: "Время вышло".into(), sub: format!("Таймер · {}", fmt_min(total)), swatch: None, timer: true },
+                    0,
+                );
+            }
+            // погода: при смене города и раз в 20 минут
+            let city = snap.peek().weather_city.trim().to_string();
+            let stale = weather_at.is_some_and(|t| t.elapsed() > Duration::from_secs(1200));
+            if city != last_city || (!city.is_empty() && stale) {
+                last_city = city.clone();
+                weather_at = Some(Instant::now());
+                if city.is_empty() {
+                    weather.set(None);
+                } else {
+                    spawn(async move {
+                        let r = bg(async move { sys::weather(&city).await }).await.flatten();
+                        weather.set(r);
+                    });
+                }
+            }
+        }
+    });
     // спектр для волны и столбиков
     use_future(|| async move {
         let ev = document::eval(WAVE_JS);
@@ -917,7 +1285,7 @@ fn IslandRoot() -> Element {
             // эквалайзер ждёт дольше: ползунок могли увести за край, пока тянут
             let wait = match m {
                 Mode::Card => 420,
-                Mode::Eq => 1100,
+                Mode::Eq | Mode::Lists | Mode::Tools | Mode::Clip => 1100,
                 _ => 0,
             };
             if wait == 0 || cursor_over_pill(&window(), m) {
@@ -953,7 +1321,7 @@ fn IslandRoot() -> Element {
     // появилось, WebView2 присылает ложный mouseenter
     let mut open_card = move || {
         let m = *mode.peek();
-        if matches!(m, Mode::Compact | Mode::PeekTrack | Mode::PeekVolume) && *phase.peek() != Phase::Leave && cursor_inside(&window()) {
+        if matches!(m, Mode::Compact | Mode::PeekTrack | Mode::PeekVolume) && *phase.peek() != Phase::Leave && !*fs_away.peek() && cursor_inside(&window()) {
             go(Mode::Card);
         }
     };
@@ -983,7 +1351,7 @@ fn IslandRoot() -> Element {
     };
     let wheel = move |e: WheelEvent| {
         let m = *mode.peek();
-        if matches!(m, Mode::Search | Mode::Eq) {
+        if matches!(m, Mode::Search | Mode::Eq | Mode::Lists | Mode::Tools | Mode::Clip) {
             return;
         }
         let up = e.delta().strip_units().y < 0.0;
@@ -1033,6 +1401,123 @@ fn IslandRoot() -> Element {
             let _ = document::eval("const q = document.querySelector('.isl-q'); if (q) { q.focus(); q.select(); }");
         });
     };
+    let mut start_timer = move |mins: u64| {
+        let total = mins * 60_000;
+        let end = Instant::now() + Duration::from_millis(total);
+        *TIMER.lock() = Some((end, total));
+        timer_view.set(Some((epoch_ms(end), total)));
+    };
+    let mut stop_timer = move || {
+        *TIMER.lock() = None;
+        timer_view.set(None);
+    };
+    // инструменты: снимки, пипетка, чистый текст, тема и питание
+    let mut tool = move |what: &'static str| {
+        // опасное (сон, перезагрузка, выключение) — по второму нажатию
+        if matches!(what, "sleep" | "restart" | "off") && *confirm.peek() != Some(what) {
+            confirm.set(Some(what));
+            spawn(async move {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                if *confirm.peek() == Some(what) {
+                    confirm.set(None);
+                }
+            });
+            return;
+        }
+        confirm.set(None);
+        match what {
+            "area" => {
+                go(Mode::Compact);
+                // выделение области — системным инструментом; снимок попадёт в
+                // буфер, и островок покажет «Изображение скопировано»
+                let _ = open::that("ms-screenclip:");
+            }
+            "full" => {
+                go(Mode::Compact);
+                spawn(async move {
+                    // сам островок в снимок не попадает
+                    place(&window(), (0.0, 0.0));
+                    tokio::time::sleep(Duration::from_millis(180)).await;
+                    let r = primary(&window().window).and_then(|m| {
+                        let (p, sz) = (m.position(), m.size());
+                        sys::screenshot(p.x, p.y, sz.width as i32, sz.height as i32)
+                    });
+                    if r.is_some() {
+                        if let Some(d) = sys::read() {
+                            remember_clip(d);
+                            *clip_gen.write() += 1;
+                        }
+                        mark_own_clip();
+                    }
+                    place(&window(), mode.peek().window());
+                    if let Some((w, h)) = r {
+                        show_note(Note::info("happy", "image", "Снимок экрана в буфере", format!("{w} × {h} · вставьте куда угодно")), 2800);
+                    }
+                });
+            }
+            "pick" => {
+                go(Mode::Compact);
+                spawn(async move {
+                    for n in (1..=3).rev() {
+                        show_note(Note::info("", "brush", "Пипетка", format!("Наведите курсор на нужный цвет… {n}")), 1300);
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                    if let Some(hex) = sys::pixel_at_cursor() {
+                        sys::write_text(&hex);
+                        mark_own_clip();
+                        remember_clip(ClipData::Text(hex.clone()));
+                        *clip_gen.write() += 1;
+                        let mut n = Note::info("happy", "brush", format!("{hex} скопирован"), "Цвет под курсором");
+                        n.swatch = Some(hex);
+                        show_note(n, 3200);
+                    }
+                });
+            }
+            "clean" => {
+                go(Mode::Compact);
+                match sys::read() {
+                    Some(ClipData::Text(t)) => {
+                        let c = sys::clean_text(&t);
+                        sys::write_text(&c);
+                        mark_own_clip();
+                        remember_clip(ClipData::Text(c.clone()));
+                        *clip_gen.write() += 1;
+                        show_note(Note::info("happy", "sparkles", "Текст очищен", preview(&c, 64)), 2600);
+                    }
+                    _ => show_note(Note::info("", "info", "В буфере нет текста", "Скопируйте текст и нажмите ещё раз"), 2600),
+                }
+            }
+            "theme" => {
+                let dark = !sys::dark_theme();
+                sys::set_dark_theme(dark);
+                go(Mode::Compact);
+                show_note(Note::info("happy", "palette", if dark { "Тёмная тема Windows" } else { "Светлая тема Windows" }, "Переключено"), 2200);
+            }
+            "lock" => sys::lock(),
+            "sleep" => sys::sleep(),
+            "restart" => sys::restart(),
+            "off" => sys::shutdown(),
+            _ => {}
+        }
+    };
+    let mut recopy = move |d: ClipData| {
+        let ok = match &d {
+            ClipData::Text(t) => sys::write_text(t),
+            ClipData::Image { dib, .. } => sys::write_dib(dib),
+        };
+        mark_own_clip();
+        if ok {
+            remember_clip(d);
+            *clip_gen.write() += 1;
+            go(Mode::Compact);
+            show_note(Note::info("happy", "copy", "Снова в буфере", "Вставьте, куда нужно"), 2000);
+        }
+    };
+    let mut open_lists = move || {
+        send(IslandCmd::WantPlaylists);
+        pl_open.set(None);
+        go(Mode::Lists);
+    };
     let mut open_eq = move || {
         let s = snap.peek();
         eq_local.set(Some((s.eq_enabled, s.eq_bands, s.eq_preset.clone())));
@@ -1071,6 +1556,41 @@ fn IslandRoot() -> Element {
         Phase::Leave => "leave",
     };
     let tid = if s.track_id.is_empty() { "none".to_string() } else { s.track_id.clone() };
+    let _ = clip_gen();
+    let n_now = note();
+    let face_cls = match (m, n_now.as_ref().map(|n| n.face)) {
+        (Mode::Note, Some("happy")) => "f-happy",
+        (Mode::Note, Some("alarm")) => "f-alarm",
+        _ => "",
+    };
+    let clips: Vec<ClipItem> = {
+        let q = clip_q().trim().to_lowercase();
+        CLIP_HIST
+            .lock()
+            .iter()
+            .filter(|c| q.is_empty() || matches!(&c.data, ClipData::Text(t) if t.to_lowercase().contains(&q)))
+            .take(40)
+            .cloned()
+            .collect()
+    };
+    let tv = timer_view();
+    let conf = confirm();
+    // текст песни для карточки
+    let has_ly = LYRICS.lock().as_ref().is_some_and(|(k, lines, _)| !lines.is_empty() && k.starts_with(&format!("{}:", s.track_id)));
+    let ly_view: Option<(usize, Vec<(String, u64, u64)>, u64, String)> = if has_ly {
+        ly_line().and_then(|(i, el)| {
+            let l = LYRICS.lock();
+            let (_, lines, _) = l.as_ref()?;
+            let (t0, text) = lines.get(i)?;
+            let t1 = lines.get(i + 1).map(|x| x.0).unwrap_or(t0 + 5000);
+            let next = lines.iter().skip(i + 1).map(|x| x.1.clone()).find(|x| !x.is_empty()).unwrap_or_default();
+            Some((i, word_times(text, t1.saturating_sub(*t0)), el, next))
+        })
+    } else {
+        None
+    };
+    let lists: Vec<PlItem> = PLAYLISTS.lock().clone().unwrap_or_default();
+    let selected: Option<PlItem> = pl_open().and_then(|id| lists.iter().find(|p| p.id == id).cloned());
     let (eq_on, eq_bands, eq_preset) = eq_local().unwrap_or((s.eq_enabled, s.eq_bands, s.eq_preset.clone()));
 
     // поиск
@@ -1107,6 +1627,9 @@ fn IslandRoot() -> Element {
     rsx! {
         div { class: "isl {m.class()} {phase_cls}",
             class: if s.playing { "playing" },
+            class: if has_ly { "has-ly" },
+            class: "{face_cls}",
+            class: if fs_away() { "fs-away" },
             style: "--acc: {acc};",
             onmouseenter: enter,
             onmousemove: moved,
@@ -1114,7 +1637,18 @@ fn IslandRoot() -> Element {
             onwheel: wheel,
             div { class: "isl-body",
                 // ── компактная ──
-                div { class: "lay lay-compact",
+                div { class: if s.playing { "lay lay-compact" } else { "lay lay-compact idle" },
+                    if !s.playing {
+                        div { class: "face", i { class: "eye" } i { class: "eye" } }
+                        div { class: "isl-clock" }
+                        div { class: "isl-right",
+                            if let Some((end, _)) = tv {
+                                span { class: "isl-timer", Icon { name: "timer", size: 12 } span { "data-end": "{end}" } }
+                            } else if let Some((ic, t)) = weather() {
+                                span { class: "isl-weather", "{ic} {t}°" }
+                            }
+                        }
+                    }
                     for id in once(tid.clone()) {
                         div { key: "{id}", class: "isl-art swap", {art_img(14)} }
                     }
@@ -1128,7 +1662,149 @@ fn IslandRoot() -> Element {
                             }
                         }
                     }
-                    div { class: "isl-bars", i {} i {} i {} i {} i {} }
+                    if let Some((end, _)) = tv {
+                        span { class: "isl-timer", Icon { name: "timer", size: 12 } span { "data-end": "{end}" } }
+                    } else {
+                        div { class: "isl-bars", i {} i {} i {} i {} i {} }
+                    }
+                }
+                // ── уведомление ──
+                div { class: "lay lay-note",
+                    if let Some(n) = n_now.clone() {
+                        div { class: "face sm", i { class: "eye" } i { class: "eye" } }
+                        if let Some(sw) = n.swatch.clone() {
+                            span { class: "n-swatch", style: "background: {sw};" }
+                        }
+                        for k in once(format!("{}{}", n.title, n.sub)) {
+                            div { key: "{k}", class: "n-meta swap",
+                                div { class: "n-title", "{n.title}" }
+                                div { class: "n-sub", "{n.sub}" }
+                            }
+                        }
+                        if n.timer {
+                            button { class: "n-btn",
+                                onclick: {
+                                    let total = n.sub.split_whitespace().find_map(|w| w.parse::<u64>().ok()).unwrap_or(5);
+                                    move |_| {
+                                        start_timer(total);
+                                        note.set(None);
+                                        go(Mode::Compact);
+                                    }
+                                },
+                                "Ещё раз"
+                            }
+                            button { class: "n-ok", title: "Закрыть",
+                                onclick: move |_| {
+                                    note.set(None);
+                                    go(Mode::Compact);
+                                },
+                                Icon { name: "check", size: 16 }
+                            }
+                        } else {
+                            span { class: "n-icon", Icon { name: n.icon, size: 16 } }
+                        }
+                    }
+                }
+                // ── инструменты ──
+                div { class: "lay lay-tools",
+                    div { class: "s-head",
+                        button { class: "isl-btn sm", title: "Назад", onclick: move |_| go(Mode::Card), Icon { name: "back", size: 16 } }
+                        div { class: "l-title", span { class: "l-name", "Инструменты" } }
+                        div { class: "isl-clock t-clock" }
+                    }
+                    div { class: "t-grid",
+                        for (id, icon, label) in [("area", "image", "Область"), ("full", "fullscreen", "Весь экран"), ("pick", "brush", "Пипетка"), ("clean", "sparkles", "Чистый текст")] {
+                            button { key: "{id}", class: "t-tile", onclick: move |_| tool(id),
+                                Icon { name: icon, size: 18 }
+                                span { "{label}" }
+                            }
+                        }
+                    }
+                    div { class: "t-row",
+                        span { class: "t-label", Icon { name: "timer", size: 13 } "Таймер" }
+                        if let Some((end, total)) = tv {
+                            span { class: "t-run", span { "data-end": "{end}" } " из {fmt_min(total)}" }
+                            button { class: "t-chip stop", onclick: move |_| stop_timer(), "Стоп" }
+                        } else {
+                            for mins in [1u64, 5, 10, 25] {
+                                button { key: "{mins}", class: "t-chip", onclick: move |_| { start_timer(mins); go(Mode::Compact); }, "{mins} мин" }
+                            }
+                        }
+                    }
+                    div { class: "t-row t-clip-head",
+                        span { class: "t-label", Icon { name: "copy", size: 13 } "Недавно скопировано" }
+                        button { class: "t-link", onclick: move |_| { clip_q.set(String::new()); go(Mode::Clip); }, "Вся история" }
+                    }
+                    div { class: "t-clips",
+                        if clips.is_empty() {
+                            div { class: "t-empty", "Скопируйте что-нибудь — оно появится здесь" }
+                        }
+                        for c in clips.iter().take(2).cloned() {
+                            button { key: "{c.id}", class: "t-clip", onclick: { let d = c.data.clone(); move |_| recopy(d.clone()) },
+                                match &c.data {
+                                    ClipData::Text(t) => rsx! { Icon { name: "copy", size: 13 } span { class: "t-clip-t", "{preview(t, 70)}" } },
+                                    ClipData::Image { w, h, .. } => rsx! { Icon { name: "image", size: 13 } span { class: "t-clip-t", "Изображение {w} × {h}" } },
+                                }
+                                span { class: "t-ago", "{ago(c.at)}" }
+                            }
+                        }
+                    }
+                    div { class: "t-power",
+                        button { class: "t-pw", title: if sys::dark_theme() { "Светлая тема Windows" } else { "Тёмная тема Windows" }, onclick: move |_| tool("theme"),
+                            Icon { name: "palette", size: 16 } span { "Тема" }
+                        }
+                        button { class: "t-pw", title: "Заблокировать компьютер", onclick: move |_| tool("lock"),
+                            Icon { name: "eye_off", size: 16 } span { "Блок" }
+                        }
+                        for (id, icon, label) in [("sleep", "g_moon", "Сон"), ("restart", "refresh", "Рестарт"), ("off", "logout", "Выкл")] {
+                            button { key: "{id}", class: if conf == Some(id) { "t-pw danger" } else { "t-pw" }, onclick: move |_| tool(id),
+                                Icon { name: icon, size: 16 }
+                                span { if conf == Some(id) { "Точно?" } else { "{label}" } }
+                            }
+                        }
+                    }
+                }
+                // ── история буфера ──
+                div { class: "lay lay-clip",
+                    div { class: "s-head",
+                        button { class: "isl-btn sm", title: "Назад", onclick: move |_| go(Mode::Tools), Icon { name: "back", size: 16 } }
+                        label { class: "s-box",
+                            Icon { name: "search", size: 15 }
+                            input { class: "isl-q", r#type: "text", placeholder: "Поиск по истории", spellcheck: "false", value: "{clip_q}",
+                                oninput: move |e: FormEvent| clip_q.set(e.value()),
+                                onfocus: move |_| window().set_focus(),
+                            }
+                        }
+                        button { class: "isl-btn sm", title: "Очистить историю",
+                            onclick: move |_| {
+                                CLIP_HIST.lock().clear();
+                                *clip_gen.write() += 1;
+                            },
+                            Icon { name: "delete", size: 15 }
+                        }
+                    }
+                    div { class: "s-list",
+                        if clips.is_empty() {
+                            div { class: "s-empty", "История пуста — копируйте текст или картинки, и они появятся тут" }
+                        }
+                        for (i, c) in clips.iter().enumerate() {
+                            button { key: "{c.id}", class: "s-row", style: "--i: {i.min(12)};", onclick: { let d = c.data.clone(); move |_| recopy(d.clone()) },
+                                div { class: "s-art",
+                                    match &c.data {
+                                        ClipData::Text(_) => rsx! { Icon { name: "copy", size: 14 } },
+                                        ClipData::Image { .. } => rsx! { Icon { name: "image", size: 14 } },
+                                    }
+                                }
+                                div { class: "s-meta",
+                                    match &c.data {
+                                        ClipData::Text(t) => rsx! { div { class: "s-t", "{preview(t, 90)}" } },
+                                        ClipData::Image { w, h, .. } => rsx! { div { class: "s-t", "Изображение {w} × {h}" } },
+                                    }
+                                    div { class: "s-a", "{ago(c.at)}" }
+                                }
+                            }
+                        }
+                    }
                 }
                 // ── сменился трек ──
                 div { class: "lay lay-peek-t",
@@ -1158,6 +1834,7 @@ fn IslandRoot() -> Element {
                 }
                 // ── карточка ──
                 div { class: "lay lay-card",
+                    div { class: "c-player",
                     div { class: "c-top rise", style: "--i: 0;",
                         for id in once(tid.clone()) {
                             div { key: "{id}", class: "isl-art big swap", {art_img(24)} }
@@ -1169,11 +1846,6 @@ fn IslandRoot() -> Element {
                                     div { class: "c-artist", "{s.artist}" }
                                 }
                             }
-                            if let Some(l) = s.lyric.clone() {
-                                for line in once(l) {
-                                    div { key: "{line}", class: "c-lyric swap", "{line}" }
-                                }
-                            }
                         }
                         div { class: "c-side",
                             button { class: if s.liked { "isl-btn on" } else { "isl-btn" }, title: "В избранное",
@@ -1182,6 +1854,31 @@ fn IslandRoot() -> Element {
                             }
                             button { class: "isl-btn", title: "Поиск песен", onclick: move |_| open_search(),
                                 Icon { name: "search", size: 16 }
+                            }
+                        }
+                    }
+                    // текст песни: текущая строка заливается по словам, снизу — следующая
+                    if has_ly {
+                        div { class: if s.playing { "c-ly rise" } else { "c-ly rise paused" }, style: "--i: 1;",
+                            match ly_view.clone() {
+                                Some((i, words, el, next)) => rsx! {
+                                    for k in once(i) {
+                                        div { key: "{k}",
+                                            div { class: "c-ly-cur",
+                                                if words.is_empty() {
+                                                    span { class: "c-ly-dots", i {} i {} i {} }
+                                                }
+                                                for (wi, (w, dl, d)) in words.iter().enumerate() {
+                                                    span { key: "{wi}", class: "c-ly-w", style: "--dl: {*dl as i64 - el as i64}ms; --d: {d}ms;", "{w} " }
+                                                }
+                                            }
+                                            div { class: "c-ly-next", "{next}" }
+                                        }
+                                    }
+                                },
+                                None => rsx! {
+                                    div { class: "c-ly-cur", span { class: "c-ly-dots", i {} i {} i {} } }
+                                },
                             }
                         }
                     }
@@ -1225,9 +1922,6 @@ fn IslandRoot() -> Element {
                             button { class: "isl-btn", title: "Следующий", onclick: move |_| send(IslandCmd::Next), Icon { name: "next", size: 18 } }
                         }
                         div { class: "c-right",
-                            button { class: if s.eq_enabled { "isl-btn sm eq-on" } else { "isl-btn sm" }, title: "Эквалайзер", onclick: move |_| open_eq(),
-                                Icon { name: "eq", size: 16 }
-                            }
                             button { class: "isl-btn sm", title: "Вернуться в Nebula", onclick: move |_| send(IslandCmd::OpenApp),
                                 Icon { name: "to_bottom", size: 16 }
                             }
@@ -1251,6 +1945,116 @@ fn IslandRoot() -> Element {
                                 span { class: "c-next-t", "в очереди больше ничего нет" }
                             }
                         },
+                    }
+                    }
+                    // меню островка — рядом с плеером, поменьше его
+                    div { class: "c-menu",
+                        button { class: "c-tile rise", style: "--i: 1;", title: "Снимок области экрана", onclick: move |_| tool("area"), Icon { name: "image", size: 16 } span { "Область" } }
+                        button { class: "c-tile rise", style: "--i: 1;", title: "Снимок всего экрана в буфер", onclick: move |_| tool("full"), Icon { name: "fullscreen", size: 16 } span { "Весь экран" } }
+                        button { class: "c-tile rise", style: "--i: 2;", title: "Цвет под курсором", onclick: move |_| tool("pick"), Icon { name: "brush", size: 16 } span { "Пипетка" } }
+                        button { class: "c-tile rise", style: "--i: 2;", title: "Убрать из скопированного текста лишнее", onclick: move |_| tool("clean"), Icon { name: "sparkles", size: 16 } span { "Чистый текст" } }
+                        button { class: "c-tile rise", style: "--i: 3;", title: "История буфера обмена", onclick: move |_| { clip_q.set(String::new()); go(Mode::Clip); }, Icon { name: "copy", size: 16 } span { "Буфер" } }
+                        button { class: "c-tile rise", style: "--i: 3;", title: "Плейлисты", onclick: move |_| open_lists(), Icon { name: "playlist", size: 16 } span { "Плейлисты" } }
+                        button { class: if s.eq_enabled { "c-tile rise on" } else { "c-tile rise" }, style: "--i: 4;", title: "Эквалайзер", onclick: move |_| open_eq(), Icon { name: "eq", size: 16 } span { "Эквалайзер" } }
+                        button { class: "c-tile rise", style: "--i: 4;", title: "Таймер, тема, блокировка и питание", onclick: move |_| go(Mode::Tools), Icon { name: "grid", size: 16 } span { "Ещё" } }
+                    }
+                }
+                // ── плейлисты ──
+                div { class: "lay lay-lists",
+                    div { class: "s-head",
+                        button { class: "isl-btn sm", title: "Назад",
+                            onclick: move |_| {
+                                if pl_open.peek().is_some() { pl_open.set(None) } else { go(Mode::Card) }
+                            },
+                            Icon { name: "back", size: 16 }
+                        }
+                        for key in once(pl_open().unwrap_or_else(|| "root".into())) {
+                            div { key: "{key}", class: "l-title swap",
+                                if let Some(p) = selected.clone() {
+                                    span { class: "l-name", "{p.name}" }
+                                    span { class: "l-count", "{tracks_word(p.tracks.len())}" }
+                                } else {
+                                    span { class: "l-name", "Плейлисты" }
+                                }
+                            }
+                        }
+                        if let Some(p) = selected.clone() {
+                            if !p.tracks.is_empty() {
+                                button { class: "l-btn", title: "Перемешать и играть",
+                                    onclick: {
+                                        let tracks = p.tracks.clone();
+                                        move |_| {
+                                            let mut v = tracks.clone();
+                                            super::shuffle_in_place(&mut v);
+                                            choose(v, 0);
+                                        }
+                                    },
+                                    Icon { name: "shuffle", size: 15 }
+                                }
+                                button { class: "l-btn play", title: "Играть с начала",
+                                    onclick: {
+                                        let tracks = p.tracks.clone();
+                                        move |_| choose(tracks.clone(), 0)
+                                    },
+                                    Icon { name: "play", size: 15 }
+                                    "Играть"
+                                }
+                            }
+                        }
+                    }
+                    for key in once(pl_open().unwrap_or_else(|| "root".into())) {
+                        div { key: "{key}", class: "s-list",
+                            if let Some(p) = selected.clone() {
+                                if p.tracks.is_empty() {
+                                    div { class: "s-empty", "В этом плейлисте пока нет треков" }
+                                }
+                                for (i, t) in p.tracks.iter().take(300).enumerate() {
+                                    button { key: "t-{i}-{t.id}", class: "s-row", style: "--i: {i.min(12)};",
+                                        onclick: {
+                                            let list = p.tracks.clone();
+                                            move |_| choose(list.clone(), i)
+                                        },
+                                        div { class: "s-art",
+                                            if let Some(a) = t.art(ArtSize::Small) {
+                                                img { src: "{a}", alt: "", draggable: false }
+                                            } else {
+                                                Icon { name: "music", size: 14 }
+                                            }
+                                        }
+                                        div { class: "s-meta",
+                                            div { class: "s-t", "{t.title}" }
+                                            div { class: "s-a", "{t.artist}" }
+                                        }
+                                        span { class: "s-d", "{fmt(t.duration_ms)}" }
+                                    }
+                                }
+                            } else {
+                                if lists.is_empty() {
+                                    div { class: "s-empty", "Пока нет ни плейлистов, ни избранного" }
+                                }
+                                for (i, p) in lists.iter().enumerate() {
+                                    button { key: "{p.id}", class: "s-row l-row", style: "--i: {i};",
+                                        onclick: {
+                                            let id = p.id.clone();
+                                            move |_| pl_open.set(Some(id.clone()))
+                                        },
+                                        div { class: "s-art l-art",
+                                            if let Some(a) = p.tracks.iter().find_map(|t| t.art(ArtSize::Small)) {
+                                                img { src: "{a}", alt: "", draggable: false }
+                                                span { class: "l-badge", Icon { name: p.icon, size: 11 } }
+                                            } else {
+                                                Icon { name: p.icon, size: 16 }
+                                            }
+                                        }
+                                        div { class: "s-meta",
+                                            div { class: "s-t", "{p.name}" }
+                                            div { class: "s-a", "{tracks_word(p.tracks.len())}" }
+                                        }
+                                        Icon { name: "forward", size: 14 }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 // ── эквалайзер ──
@@ -1632,6 +2436,151 @@ button { border: none; background: none; color: inherit; font: inherit; cursor: 
 .c-next-t { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
 .c-next-a { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #8d8d8d; }
 .c-next.empty .c-next-t { color: #777; font-weight: 500; }
+
+/* ── текст песни в карточке: караоке по словам ── */
+.isl.m-card.has-ly { height: 290px; }
+.isl.has-ly .lay-card { height: 290px; }
+.c-ly { position: relative; margin-top: 12px; height: 58px; overflow: hidden;
+  mask-image: linear-gradient(#000 72%, transparent); }
+.c-ly-cur { font-size: 15px; font-weight: 750; line-height: 1.28; letter-spacing: -.005em;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  animation: ly-in 520ms var(--spring) both; }
+.c-ly-next { margin-top: 4px; font-size: 12px; font-weight: 600; color: #616161; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  animation: ly-next-in 620ms var(--spring) 80ms both; }
+@keyframes ly-in { from { opacity: 0; translate: 0 18px; filter: blur(5px); scale: .97; } }
+@keyframes ly-next-in { from { opacity: 0; translate: 0 10px; } }
+/* слово заливается слева направо, пока его поют; спетое слегка светится цветом обложки */
+.c-ly-w { background-image: linear-gradient(90deg, #fff 0 45%, color-mix(in srgb, var(--acc) 55%, #fff) 50%, rgba(255, 255, 255, .3) 55% 100%);
+  background-size: 220% 100%; background-position: 100% 0; -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: ly-fill var(--d) linear var(--dl) both; }
+@keyframes ly-fill { from { background-position: 100% 0; } to { background-position: 0 0; } }
+.c-ly.paused .c-ly-w, .c-ly.paused .c-ly-dots i { animation-play-state: paused; }
+/* проигрыш без слов — три пульсирующие точки */
+.c-ly-dots { display: inline-flex; gap: 5px; padding: 6px 0; }
+.c-ly-dots i { width: 7px; height: 7px; border-radius: 50%; background: var(--acc); animation: ly-dot 1.2s ease-in-out infinite; }
+.c-ly-dots i:nth-child(2) { animation-delay: .18s; }
+.c-ly-dots i:nth-child(3) { animation-delay: .36s; }
+@keyframes ly-dot { 0%, 100% { opacity: .25; scale: .7; } 50% { opacity: 1; scale: 1; } }
+
+/* ── мини-лицо: моргает, следит за курсором, радуется и пугается ── */
+.face { display: flex; gap: 7px; align-items: center; justify-content: center; width: 38px; height: 26px; flex: 0 0 auto;
+  translate: calc(var(--lx, 0) * 4px) calc(var(--ly, 0) * 2.5px); transition: translate 200ms ease-out; }
+.face.sm { width: 34px; }
+.eye { width: 7px; height: 12px; border-radius: 4px; background: #fff; box-sizing: border-box;
+  animation: blink 4.8s infinite; transition: height 240ms var(--spring), border-radius 240ms, scale 240ms var(--spring); }
+.eye + .eye { animation-delay: .05s; }
+@keyframes blink { 0%, 92%, 100% { scale: 1 1; } 94.5% { scale: 1 .1; } }
+/* радость: глаза-дужки «^^» */
+.isl.f-happy .eye { width: 9px; height: 6px; background: transparent; border: 2.5px solid #fff; border-bottom: none; border-radius: 9px 9px 0 0; animation: none; translate: 0 -1px; }
+/* тревога (таймер): глаза круглые и дрожат, капля пульсирует */
+.isl.f-alarm .eye { width: 9px; height: 9px; border-radius: 50%; animation: eye-shake .22s linear infinite; }
+@keyframes eye-shake { 0%, 100% { translate: 0 0; } 25% { translate: -1px 0; } 75% { translate: 1px 0; } }
+.isl.f-alarm .isl-body { animation: alarm 1s ease-in-out infinite; }
+@keyframes alarm { 50% { box-shadow: 0 14px 28px -12px rgba(0, 0, 0, .6), 0 6px 26px -6px rgba(255, 140, 60, .9); } }
+
+/* спокойный островок: лицо, часы, погода или таймер */
+.lay-compact.idle { gap: 8px; padding: 0 14px 0 8px; }
+.lay-compact.idle .isl-art, .lay-compact.idle .isl-title, .lay-compact.idle .isl-bars, .lay-compact.idle > .isl-timer { display: none; }
+.isl-clock { flex: 1; text-align: center; font-size: 13.5px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: .02em; }
+.isl-right { min-width: 38px; display: flex; justify-content: flex-end; }
+.isl-weather { font-size: 12.5px; font-weight: 650; white-space: nowrap; }
+.isl-timer { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 700; color: #ffb27a; font-variant-numeric: tabular-nums; }
+
+/* ── уведомление ── */
+.isl.m-note { width: 400px; height: 58px; }
+.isl.m-note .isl-body { border-radius: 0 0 26px 26px; }
+.isl.m-note .lay-note { opacity: 1; scale: 1; filter: none; pointer-events: auto; transition: opacity 260ms ease 110ms, scale 560ms var(--spring) 60ms, filter 300ms ease 90ms; }
+.lay-note { width: 400px; height: 58px; display: flex; align-items: center; gap: 12px; padding: 0 12px 0 14px; }
+.n-swatch { width: 26px; height: 26px; border-radius: 8px; flex: 0 0 auto; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .25); animation: pop 520ms var(--spring); }
+.n-meta { flex: 1; min-width: 0; }
+.n-title { font-size: 13.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.n-sub { margin-top: 1px; font-size: 11.5px; color: #9a9a9a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.n-icon { color: var(--acc); flex: 0 0 auto; display: grid; }
+.n-btn { height: 32px; padding: 0 12px; border-radius: 16px; background: rgba(255, 255, 255, .1); font-size: 12px; font-weight: 650; flex: 0 0 auto; transition: background 160ms; }
+.n-btn:hover { background: rgba(255, 255, 255, .18); }
+.n-ok { width: 34px; height: 34px; border-radius: 50%; background: #fff; color: #000; display: grid; place-items: center; flex: 0 0 auto; transition: scale 260ms var(--spring); }
+.n-ok:active { scale: .9; }
+
+/* ── инструменты ── */
+.isl.m-tools { width: 404px; height: 372px; }
+.isl.m-tools .isl-body, .isl.m-clip .isl-body { border-radius: 0 0 32px 32px; }
+.isl.m-tools .lay-tools, .isl.m-clip .lay-clip { opacity: 1; scale: 1; filter: none; pointer-events: auto; transition: opacity 260ms ease 110ms, scale 560ms var(--spring) 60ms, filter 300ms ease 90ms; }
+.lay-tools { width: 404px; height: 372px; padding: 14px 14px 14px; display: flex; flex-direction: column; gap: 10px; }
+.t-clock { flex: 0 0 auto; color: #9a9a9a; font-size: 12.5px; }
+.t-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.t-tile { height: 66px; border-radius: 14px; background: rgba(255, 255, 255, .06); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  color: #e6e6e6; font-size: 11.5px; font-weight: 600; transition: background 160ms, scale 260ms var(--spring); }
+.t-tile .icon { color: var(--acc); }
+.t-tile:hover { background: rgba(255, 255, 255, .11); }
+.t-tile:active { scale: .94; }
+.isl.m-tools .t-tile { animation: rise 460ms var(--spring) both; }
+.isl.m-tools .t-tile:nth-child(2) { animation-delay: 40ms; }
+.isl.m-tools .t-tile:nth-child(3) { animation-delay: 80ms; }
+.isl.m-tools .t-tile:nth-child(4) { animation-delay: 120ms; }
+.t-row { display: flex; align-items: center; gap: 6px; min-height: 30px; }
+.t-label { display: inline-flex; align-items: center; gap: 6px; margin-right: auto; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: #7a7a7a; }
+.t-chip { height: 28px; padding: 0 11px; border-radius: 14px; background: rgba(255, 255, 255, .07); font-size: 12px; font-weight: 600; color: #d6d6d6; transition: background 160ms, scale 260ms var(--spring); }
+.t-chip:hover { background: rgba(255, 255, 255, .14); }
+.t-chip:active { scale: .92; }
+.t-chip.stop { background: rgba(255, 110, 90, .18); color: #ff9a8a; }
+.t-run { font-size: 12.5px; font-weight: 700; color: #ffb27a; font-variant-numeric: tabular-nums; }
+.t-link { font-size: 11.5px; font-weight: 600; color: var(--acc); }
+.t-clip-head { min-height: 20px; }
+.t-clips { display: flex; flex-direction: column; gap: 4px; min-height: 60px; }
+.t-clip { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 10px; border-radius: 9px; background: rgba(255, 255, 255, .045); color: #d0d0d0; font-size: 12px; transition: background 140ms; }
+.t-clip:hover { background: rgba(255, 255, 255, .1); }
+.t-clip .icon { color: #8d8d8d; flex: 0 0 auto; }
+.t-clip-t { flex: 1; min-width: 0; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.t-ago { flex: 0 0 auto; font-size: 10.5px; color: #6f6f6f; }
+.t-empty { padding: 8px 4px; font-size: 12px; color: #6f6f6f; }
+.t-power { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-top: auto; }
+.t-pw { height: 50px; border-radius: 12px; background: rgba(255, 255, 255, .05); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  font-size: 10.5px; font-weight: 600; color: #bdbdbd; transition: background 160ms, color 160ms, scale 260ms var(--spring); }
+.t-pw:hover { background: rgba(255, 255, 255, .1); color: #fff; }
+.t-pw:active { scale: .93; }
+.t-pw.danger { background: rgba(255, 90, 70, .22); color: #ffb0a4; animation: pop 420ms var(--spring); }
+
+/* ── история буфера ── */
+.isl.m-clip { width: 404px; height: 412px; }
+.lay-clip { width: 404px; height: 412px; padding: 14px 14px 12px; display: flex; flex-direction: column; }
+
+/* ── на весь экран кино или игра — островок уходит за край ── */
+.isl.fs-away { translate: 0 -110%; opacity: 0; transition: translate 380ms cubic-bezier(.5, 0, .75, 0), opacity 300ms, width var(--morph) var(--spring), height var(--morph) var(--spring); }
+.isl { transition: width var(--morph) var(--spring), height var(--morph) var(--spring), translate 520ms var(--spring), opacity 300ms; }
+
+/* ── «Главная»: плеер слева, меню справа ── */
+.isl.m-card { width: 690px; }
+.lay-card { width: 690px; padding: 0; flex-direction: row; }
+.c-player { width: 404px; flex: 0 0 auto; height: 100%; box-sizing: border-box; padding: 15px 18px 12px; display: flex; flex-direction: column; }
+.c-menu { flex: 1; min-width: 0; box-sizing: border-box; padding: 16px 16px 16px 6px; display: grid; grid-template-columns: 1fr 1fr; grid-auto-rows: 1fr; gap: 6px; }
+.c-menu::before { content: ""; position: absolute; left: 404px; top: 18px; bottom: 18px; width: 1px; background: rgba(255, 255, 255, .07); }
+.c-tile { min-height: 40px; border-radius: 12px; background: rgba(255, 255, 255, .05); display: flex; align-items: center; gap: 8px; padding: 0 10px;
+  color: #d8d8d8; font-size: 11.5px; font-weight: 600; text-align: left; white-space: nowrap; overflow: hidden; transition: background 160ms, scale 260ms var(--spring); }
+.c-tile .icon { color: var(--acc); flex: 0 0 auto; }
+.c-tile span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.c-tile:hover { background: rgba(255, 255, 255, .11); color: #fff; }
+.c-tile:active { scale: .95; }
+.c-tile.on { background: color-mix(in srgb, var(--acc) 22%, transparent); }
+
+/* ── плейлисты ── */
+.isl.m-lists { width: 404px; height: 412px; }
+.isl.m-lists .isl-body { border-radius: 0 0 32px 32px; }
+.isl.m-lists .lay-lists { opacity: 1; scale: 1; filter: none; pointer-events: auto; transition: opacity 260ms ease 110ms, scale 560ms var(--spring) 60ms, filter 300ms ease 90ms; }
+.lay-lists { width: 404px; height: 412px; padding: 14px 14px 12px; display: flex; flex-direction: column; }
+.l-title { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; height: 38px; padding-left: 2px; }
+.l-name { font-size: 14.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.l-count { font-size: 11px; color: #8d8d8d; }
+.l-btn { height: 32px; min-width: 32px; padding: 0 9px; border-radius: 16px; display: flex; align-items: center; justify-content: center; gap: 6px; background: rgba(255, 255, 255, .08);
+  color: #e6e6e6; font-size: 12px; font-weight: 650; transition: background 160ms, scale 260ms var(--spring); }
+.l-btn:hover { background: rgba(255, 255, 255, .14); }
+.l-btn:active { scale: .92; }
+.l-btn.play { background: #fff; color: #000; padding: 0 12px 0 10px; }
+.lay-lists .s-list { animation: rise 360ms var(--spring) both; }
+.l-row > .icon { flex: 0 0 auto; color: #6f6f6f; transition: translate 200ms var(--spring); }
+.l-row:hover > .icon { translate: 3px 0; color: #bdbdbd; }
+.l-art { position: relative; overflow: visible; color: var(--acc); }
+.l-art img { border-radius: 9px; }
+.l-badge { position: absolute; right: -4px; bottom: -4px; width: 18px; height: 18px; border-radius: 50%; background: #000; display: grid; place-items: center; color: var(--acc); }
 
 /* ── эквалайзер ── */
 .isl.m-eq { width: 404px; height: 300px; }

@@ -6,6 +6,8 @@ mod actions;
 mod background;
 mod chrome;
 mod desk_island;
+mod download;
+mod island_sys;
 mod icons;
 mod import_dialog;
 mod lyrics_view;
@@ -21,6 +23,7 @@ mod state;
 mod theme_editor;
 mod tracks;
 mod transition;
+mod tray_menu;
 mod widgets;
 
 use crate::audio::{PlaybackState, PlayerEvent};
@@ -32,7 +35,7 @@ use crate::theme::{self, PlayerPos, Side, SidebarPos, ELEMENTS};
 use actions::*;
 use background::Background;
 use chrome::{style_window_frame, ResizeHandles, Sidebar, TitleBar};
-use dioxus::desktop::{use_asset_handler, use_global_shortcut, use_wry_event_handler, window, HotKeyState};
+use dioxus::desktop::{use_asset_handler, use_global_shortcut, use_tray_icon_event_handler, use_wry_event_handler, window, HotKeyState};
 use dioxus::prelude::*;
 use lyrics_view::{FullscreenHost, LyricsHost};
 use overlays::{ContextMenu, EditHint, ModalHost, QueuePanel, Toasts};
@@ -363,7 +366,7 @@ fn handle_key(st: AppState, m: JsMsg) {
             w.set_fullscreen(!fs);
         }
         ("Escape", _) => {
-            let (mut menu, mut modal, mut sel, mut edit, mut fs, mut eq) = (st.menu, st.modal, st.selected_el, st.edit_mode, st.fullscreen, st.eq_open);
+            let (mut menu, mut modal, mut sel, mut edit, mut fs, eq) = (st.menu, st.modal, st.selected_el, st.edit_mode, st.fullscreen, st.eq_open);
             if menu.peek().is_some() {
                 menu.set(None);
             } else if modal.peek().is_some() {
@@ -373,7 +376,7 @@ fn handle_key(st: AppState, m: JsMsg) {
             } else if *edit.peek() {
                 edit.set(false);
             } else if *eq.peek() {
-                eq.set(false);
+                player_bar::set_eq_open(st, false);
             } else if *fs.peek() {
                 if window().fullscreen().is_some() {
                     window().set_fullscreen(false);
@@ -444,6 +447,22 @@ fn use_autosave<T: Clone + PartialEq + Send + 'static>(sig: Signal<T>, delay_ms:
 /// urn аккаунта SoundCloud, на который сейчас засчитывается время прослушивания.
 pub fn sc_account(st: AppState) -> Option<String> {
     st.sc_user.peek().as_ref().map(|u| u.urn.clone()).filter(|u| !u.is_empty())
+}
+
+/// Вернуть окно из трея (или из островка, если он открыт).
+fn show_from_tray(st: AppState) {
+    let island = {
+        let s = st.settings.peek();
+        s.player_collapsed && s.island_desktop
+    };
+    if island {
+        desk_island::fly_in(st);
+        return;
+    }
+    let w = window();
+    w.set_visible(true);
+    w.set_minimized(false);
+    w.set_focus();
 }
 
 fn apply_window_effect(effect: WindowEffect, dark: bool) {
@@ -628,7 +647,12 @@ pub fn App() -> Element {
                     }
                 }
                 WindowEvent::CloseRequested => {
-                    desk_island::close_now();
+                    // с «трей вместо закрытия» Alt+F4 лишь прячет окно — островок не трогаем
+                    if !st.settings.peek().close_to_tray {
+                        // приложение закрывается — служебные окна тоже, иначе оно не завершится
+                        desk_island::close_now();
+                        tray_menu::close();
+                    }
                     st.settings.peek().save();
                     st.library.peek().save();
                     save_session(st);
@@ -836,14 +860,24 @@ pub fn App() -> Element {
             tokio::time::sleep(Duration::from_millis(150)).await;
             if desk_island::is_open() {
                 let now = st.now.peek().clone();
-                let pos = *st.position.peek();
-                let lyric = match &*st.lyrics.peek() {
-                    LyricsState::Found(l) if l.is_synced() => {
-                        let off = *st.lyrics_offset.peek() as i64 + st.settings.peek().lyrics_offset_ms as i64;
-                        l.active_index(pos as i64 + off).and_then(|i| l.synced.get(i)).map(|x| x.text.trim().to_string()).filter(|t| !t.is_empty())
+                // позиция прямо из плеера и момент замера: островок сам ведёт
+                // время дальше, и текст идёт точно в такт
+                let playing_now = matches!(*st.pstate.peek(), PlaybackState::Playing | PlaybackState::Buffering);
+                let pos = if playing_now { svc().player.snapshot().position_ms } else { *st.position.peek() };
+                let pos_at = Some(Instant::now());
+                // синхронный текст целиком (отправляется, только когда он сменился)
+                {
+                    let off = *st.lyrics_offset.peek() as i64 + st.settings.peek().lyrics_offset_ms as i64;
+                    let tid = now.as_ref().map(|t| t.id.as_str()).unwrap_or("");
+                    match &*st.lyrics.peek() {
+                        LyricsState::Found(l) if l.is_synced() => {
+                            let key = format!("{tid}:{}:{off}", l.synced.len());
+                            desk_island::publish_lyrics(&key, || (l.synced.iter().map(|x| (x.time_ms, x.text.trim().to_string())).collect(), off));
+                        }
+                        _ => desk_island::publish_lyrics(&format!("{tid}:none"), || (Vec::new(), 0)),
                     }
-                    _ => None,
-                };
+                }
+                let lyric = None;
                 let liked = now.as_ref().is_some_and(|t| st.library.peek().is_favorite(&t.id));
                 let (volume, max_volume, vol_step, muted) = {
                     let s = st.settings.peek();
@@ -859,8 +893,9 @@ pub fn App() -> Element {
                     title: now.as_ref().map(|t| t.title.clone()).unwrap_or_default(),
                     artist: now.as_ref().map(|t| t.artist.clone()).unwrap_or_default(),
                     art: now.as_ref().and_then(|t| t.art(crate::model::ArtSize::Medium)),
-                    playing: matches!(*st.pstate.peek(), PlaybackState::Playing | PlaybackState::Buffering),
+                    playing: playing_now,
                     pos_ms: pos,
+                    pos_at,
                     dur_ms: *st.duration.peek(),
                     lyric,
                     liked,
@@ -870,6 +905,7 @@ pub fn App() -> Element {
                     muted,
                     accent: st.accent.peek().clone(),
                     next,
+                    weather_city: st.settings.peek().weather_city.clone(),
                     eq_enabled: st.settings.peek().eq_enabled,
                     eq_bands: st.settings.peek().eq_bands,
                     eq_preset: st.settings.peek().eq_preset.clone(),
@@ -917,6 +953,25 @@ pub fn App() -> Element {
                         let recent = lib.recent_searches.iter().take(8).cloned().collect();
                         desk_island::publish_corpus(desk_island::Corpus { tracks, recent });
                     }
+                    IslandCmd::WantPlaylists => {
+                        use desk_island::PlItem;
+                        let lib = st.library.peek();
+                        let mut v = Vec::new();
+                        if !lib.favorites.is_empty() {
+                            v.push(PlItem { id: "fav".into(), name: "Избранное".into(), icon: "heart", tracks: lib.favorites.clone() });
+                        }
+                        for p in &lib.playlists {
+                            v.push(PlItem { id: format!("pl:{}", p.id), name: p.name.clone(), icon: "playlist", tracks: p.tracks.clone() });
+                        }
+                        if !lib.history.is_empty() {
+                            v.push(PlItem { id: "hist".into(), name: "Недавно слушали".into(), icon: "history", tracks: lib.history.iter().take(100).cloned().collect() });
+                        }
+                        let local = st.local.peek();
+                        if !local.is_empty() {
+                            v.push(PlItem { id: "local".into(), name: "Моя музыка".into(), icon: "folder", tracks: local.iter().take(3000).cloned().collect() });
+                        }
+                        desk_island::publish_playlists(v);
+                    }
                     IslandCmd::Play(tracks, i) => play_list(st, tracks, i, "Островок · поиск"),
                     IslandCmd::EqEnabled(on) => st.settings.write().eq_enabled = on,
                     IslandCmd::EqPreset(id) => {
@@ -950,6 +1005,61 @@ pub fn App() -> Element {
             desk_island::open(Duration::ZERO);
         } else {
             desk_island::close();
+        }
+    });
+    // ── значок в трее: вернуть окно, пауза, треки, выход ──
+    // ── значок в трее: левый щелчок возвращает окно, правый — своё меню ──
+    let tray = use_hook(|| {
+        use dioxus::desktop::trayicon::{Icon, TrayIconBuilder};
+        let (rgba, w, h) = crate::app_icon_rgba();
+        let mut b = TrayIconBuilder::new().with_tooltip("Nebula");
+        if let Ok(icon) = Icon::from_rgba(rgba, w, h) {
+            b = b.with_icon(icon);
+        }
+        b.build().ok()
+    });
+    // меню рисуем сами (tray_menu): системное почти не настраивается. Окно
+    // создаём после первой отрисовки — новое дерево Dioxus посреди отрисовки
+    // главного окна сбивало его, и приложение закрывалось
+    use_effect(|| tray_menu::init());
+    use_effect(move || {
+        // значок виден, пока крестик прячет окно в трей; Alt+F4 ведёт себя так же
+        let on = st.settings.read().close_to_tray;
+        if let Some(t) = tray.as_ref() {
+            let _ = t.set_visible(on);
+        }
+        window().set_close_behavior(if on { dioxus::desktop::WindowCloseBehaviour::WindowHides } else { dioxus::desktop::WindowCloseBehaviour::WindowCloses });
+    });
+    use_tray_icon_event_handler(move |e| {
+        use dioxus::desktop::trayicon::{MouseButton, MouseButtonState, TrayIconEvent};
+        if let TrayIconEvent::Click { button, button_state: MouseButtonState::Up, position, .. } = e {
+            match button {
+                MouseButton::Left => show_from_tray(st),
+                MouseButton::Right => tray_menu::show_at(position.x, position.y),
+                _ => {}
+            }
+        }
+    });
+    // сводка для меню трея и его команды
+    use_future(move || async move {
+        use tray_menu::{MenuSnap, TrayCmd};
+        loop {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            {
+                tray_menu::publish(MenuSnap {
+                    playing: matches!(*st.pstate.peek(), PlaybackState::Playing | PlaybackState::Buffering),
+                    title: st.now.peek().as_ref().map(|t| format!("{} — {}", t.title, t.artist)).unwrap_or_default(),
+                });
+            }
+            for c in tray_menu::take_commands() {
+                match c {
+                    TrayCmd::Open => show_from_tray(st),
+                    TrayCmd::TogglePlay => toggle_play(st),
+                    TrayCmd::Next => next(st, true),
+                    TrayCmd::Prev => prev(st),
+                    TrayCmd::Quit => chrome::quit_app(st),
+                }
+            }
         }
     });
     // первый вход в аккаунт SoundCloud: время, наслушанное без входа, переходит к нему
@@ -1124,6 +1234,7 @@ pub fn App() -> Element {
                 EqPanel {}
             }
             ContextMenu {}
+            download::DownloadDialog {}
             ModalHost {}
             Toasts {}
             if *st.edit_mode.read() {
