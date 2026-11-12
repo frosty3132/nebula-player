@@ -61,6 +61,9 @@ pub struct IslandSnap {
     pub next: Option<(String, String)>,
     /// Город для погоды в спокойном островке (из настроек; пусто — без погоды).
     pub weather_city: String,
+    /// Сколько треков дальше в очереди и устройство вывода.
+    pub queue_left: usize,
+    pub device: String,
     /// Эквалайзер: включён ли, полосы (дБ) и выбранный пресет.
     pub eq_enabled: bool,
     pub eq_bands: [f32; 10],
@@ -106,6 +109,18 @@ static CMDS: Mutex<Vec<IslandCmd>> = Mutex::new(Vec::new());
 static CORPUS: Mutex<Option<Corpus>> = Mutex::new(None);
 static CORPUS_GEN: AtomicU32 = AtomicU32::new(0);
 static PLAYLISTS: Mutex<Option<Vec<PlItem>>> = Mutex::new(None);
+/// Недавно слушали (ключ — чтобы не пересылать одно и то же).
+static RECENT: Mutex<(String, Vec<Track>)> = Mutex::new((String::new(), Vec::new()));
+
+/// Обновить «Недавние» для островка; `make` вызывается, только если они сменились.
+pub fn publish_recent(key: &str, make: impl FnOnce() -> Vec<Track>) {
+    let mut r = RECENT.lock();
+    if r.0 == key {
+        return;
+    }
+    *r = (key.to_string(), make());
+    CORPUS_GEN.fetch_add(1, Ordering::Relaxed);
+}
 /// Синхронный текст текущего трека: ключ (трек, число строк, сдвиг),
 /// строки (время, текст) и сдвиг в мс.
 static LYRICS: Mutex<Option<(String, Vec<(u64, String)>, i64)>> = Mutex::new(None);
@@ -352,7 +367,7 @@ impl Mode {
             Mode::Compact => (300.0, 40.0),
             Mode::PeekTrack => (364.0, 58.0),
             Mode::PeekVolume => (320.0, 46.0),
-            Mode::Card => (690.0, 290.0),
+            Mode::Card => (740.0, 428.0),
             Mode::Search => (404.0, 412.0),
             Mode::Eq => (404.0, 300.0),
             Mode::Lists => (404.0, 412.0),
@@ -530,8 +545,18 @@ fn no_classic_frame(win: &Window) {
     }
 }
 
+/// Режим проверки (только отладочная сборка, NEBULA_ISLAND_TEST): островок
+/// не прячется на полном экране и раскрывается от программного наведения —
+/// автотестам не нужно двигать настоящую мышь.
+fn test_mode() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("NEBULA_ISLAND_TEST").is_some()
+}
+
 /// Курсор сейчас над видимой частью окна (экранные координаты Windows).
 fn cursor_inside(w: &DesktopContext) -> bool {
+    if test_mode() {
+        return true;
+    }
     let win = &w.window;
     let (Ok(c), Ok(p)) = (win.cursor_position(), win.outer_position()) else { return true };
     let scale = win.scale_factor();
@@ -543,6 +568,9 @@ fn cursor_inside(w: &DesktopContext) -> bool {
 
 /// Курсор над самой каплей (с волной), а не над прозрачными полями окна.
 fn cursor_over_pill(w: &DesktopContext, m: Mode) -> bool {
+    if test_mode() {
+        return true;
+    }
     let win = &w.window;
     let (Ok(c), Ok(p)) = (win.cursor_position(), win.outer_position()) else { return true };
     let scale = win.scale_factor();
@@ -989,6 +1017,8 @@ fn IslandRoot() -> Element {
     let mut pl_open = use_signal(|| None::<String>);
     // уведомление, подтверждение опасных кнопок, история буфера, погода
     let mut note = use_signal(|| None::<Note>);
+    // «Главная» закреплена — не сворачивается, когда уводят мышь
+    let mut pinned = use_signal(|| false);
     let mut confirm = use_signal(|| None::<&'static str>);
     let mut clip_q = use_signal(String::new);
     let mut clip_gen = use_signal(|| 0u32);
@@ -1210,7 +1240,7 @@ fn IslandRoot() -> Element {
                 if tick % 5 == 0 {
                     let half = (Mode::Compact.pill().0 / 2.0 + 40.0) * scale;
                     let near_top = c.y <= p.y as f64 + 3.0 * scale && (c.x - cx).abs() < half;
-                    let away = sys::fullscreen_busy() && !near_top && *mode.peek() == Mode::Compact;
+                    let away = !test_mode() && sys::fullscreen_busy() && !near_top && *mode.peek() == Mode::Compact;
                     if away != *fs_away.peek() {
                         fs_away.set(away);
                         place(&w, if away { (0.0, 0.0) } else { mode.peek().window() });
@@ -1288,7 +1318,7 @@ fn IslandRoot() -> Element {
                 Mode::Eq | Mode::Lists | Mode::Tools | Mode::Clip => 1100,
                 _ => 0,
             };
-            if wait == 0 || cursor_over_pill(&window(), m) {
+            if wait == 0 || cursor_over_pill(&window(), m) || (m == Mode::Card && *pinned.peek()) {
                 outside_since = None;
                 continue;
             }
@@ -1589,6 +1619,15 @@ fn IslandRoot() -> Element {
     } else {
         None
     };
+    // колонка текста: предыдущая строка, текущая (по словам) и две следующие
+    let ly_ctx: Option<(usize, Option<String>, Vec<(String, u64, u64)>, u64, Vec<String>)> = ly_view.as_ref().and_then(|(i, words, el, _)| {
+        let l = LYRICS.lock();
+        let (_, lines, _) = l.as_ref()?;
+        let prev = i.checked_sub(1).and_then(|p| lines.get(p)).map(|x| x.1.clone()).filter(|t| !t.is_empty());
+        let nexts: Vec<String> = lines.iter().skip(i + 1).map(|x| x.1.clone()).filter(|t| !t.is_empty()).take(2).collect();
+        Some((*i, prev, words.clone(), *el, nexts))
+    });
+    let recent_tracks: Vec<Track> = RECENT.lock().1.clone();
     let lists: Vec<PlItem> = PLAYLISTS.lock().clone().unwrap_or_default();
     let selected: Option<PlItem> = pl_open().and_then(|id| lists.iter().find(|p| p.id == id).cloned());
     let (eq_on, eq_bands, eq_preset) = eq_local().unwrap_or((s.eq_enabled, s.eq_bands, s.eq_preset.clone()));
@@ -1834,129 +1873,159 @@ fn IslandRoot() -> Element {
                 }
                 // ── карточка ──
                 div { class: "lay lay-card",
-                    div { class: "c-player",
-                    div { class: "c-top rise", style: "--i: 0;",
-                        for id in once(tid.clone()) {
-                            div { key: "{id}", class: "isl-art big swap", {art_img(24)} }
-                        }
-                        div { class: "c-meta",
-                            for id in once(tid.clone()) {
-                                div { key: "{id}", class: "swap",
-                                    div { class: "c-name", if s.has_track { "{s.title}" } else { "Ничего не играет" } }
-                                    div { class: "c-artist", "{s.artist}" }
-                                }
-                            }
-                        }
-                        div { class: "c-side",
-                            button { class: if s.liked { "isl-btn on" } else { "isl-btn" }, title: "В избранное",
-                                onclick: move |_| send(IslandCmd::Like),
-                                Icon { name: if s.liked { "heart" } else { "heart_outline" }, size: 16 }
-                            }
-                            button { class: "isl-btn", title: "Поиск песен", onclick: move |_| open_search(),
-                                Icon { name: "search", size: 16 }
-                            }
-                        }
+                    // вкладки: «Главная» и быстрые переходы
+                    div { class: "h-tabs rise", style: "--i: 0;",
+                        button { class: "h-tab on", Icon { name: "home", size: 15 } span { "Главная" } }
+                        button { class: "h-ico", title: "Буфер обмена", onclick: move |_| { clip_q.set(String::new()); go(Mode::Clip); }, Icon { name: "copy", size: 16 } }
+                        button { class: "h-ico", title: "Плейлисты", onclick: move |_| open_lists(), Icon { name: "playlist", size: 16 } }
+                        button { class: "h-ico", title: "Поиск песен", onclick: move |_| open_search(), Icon { name: "search", size: 16 } }
+                        button { class: if s.eq_enabled { "h-ico on" } else { "h-ico" }, title: "Эквалайзер", onclick: move |_| open_eq(), Icon { name: "eq", size: 16 } }
+                        button { class: "h-ico", title: "Таймер, тема и питание", onclick: move |_| go(Mode::Tools), Icon { name: "timer", size: 16 } }
+                        div { class: "h-gap" }
+                        button { class: if pinned() { "h-ico on" } else { "h-ico" }, title: if pinned() { "Открепить — сворачиваться, когда уводят мышь" } else { "Закрепить раскрытым" },
+                            onclick: move |_| pinned.toggle(), Icon { name: "pin", size: 16 } }
+                        button { class: "h-ico", title: "Вернуться в Nebula", onclick: move |_| send(IslandCmd::OpenApp), Icon { name: "to_bottom", size: 16 } }
                     }
-                    // текст песни: текущая строка заливается по словам, снизу — следующая
-                    if has_ly {
-                        div { class: if s.playing { "c-ly rise" } else { "c-ly rise paused" }, style: "--i: 1;",
-                            match ly_view.clone() {
-                                Some((i, words, el, next)) => rsx! {
-                                    for k in once(i) {
-                                        div { key: "{k}",
-                                            div { class: "c-ly-cur",
-                                                if words.is_empty() {
-                                                    span { class: "c-ly-dots", i {} i {} i {} }
-                                                }
-                                                for (wi, (w, dl, d)) in words.iter().enumerate() {
-                                                    span { key: "{wi}", class: "c-ly-w", style: "--dl: {*dl as i64 - el as i64}ms; --d: {d}ms;", "{w} " }
-                                                }
-                                            }
-                                            div { class: "c-ly-next", "{next}" }
+                    div { class: "h-main",
+                        div { class: "h-left",
+                            // плеер: обложка с подсветкой, кнопки и текст песни рядом
+                            div { class: "h-player rise", style: "--i: 1;",
+                                div { class: "h-np",
+                                    if s.queue_left > 0 {
+                                        span { class: "h-queue", title: "Треков дальше в очереди", Icon { name: "queue", size: 12 } "{s.queue_left}" }
+                                    }
+                                    for id in once(tid.clone()) {
+                                        div { key: "{id}", class: "h-art swap", {art_img(30)} }
+                                    }
+                                    for id in once(tid.clone()) {
+                                        div { key: "{id}", class: "h-meta swap",
+                                            div { class: "h-title", if s.has_track { "{s.title}" } else { "Ничего не играет" } }
+                                            div { class: "h-artist", "{s.artist}" }
                                         }
                                     }
-                                },
-                                None => rsx! {
-                                    div { class: "c-ly-cur", span { class: "c-ly-dots", i {} i {} i {} } }
-                                },
-                            }
-                        }
-                    }
-                    div { class: "c-prog rise", style: "--i: 1;",
-                        span { "{fmt(s.pos_ms)}" }
-                        div {
-                            class: "c-track",
-                            title: "Перемотка — щёлкните или тяните",
-                            "data-scrub": "seek",
-                            "data-dur": "{s.dur_ms}",
-                            style: "--pos: {pct}%;",
-                            div { class: "c-fill" }
-                            div { class: "c-knob" }
-                            div { class: "c-tip" }
-                        }
-                        span { "{fmt(s.dur_ms)}" }
-                    }
-                    div { class: "c-ctrl rise", style: "--i: 2;",
-                        div { class: "c-vol",
-                            button { class: "isl-btn sm", title: "Без звука", onclick: move |_| send(IslandCmd::Mute),
-                                Icon { name: vol_icon, size: 16 }
-                            }
-                            div {
-                                class: "c-vol-track",
-                                title: "Громкость — тяните или крутите колёсико над островком",
-                                "data-scrub": "vol",
-                                "data-max": "{s.max_volume}",
-                                style: "--pos: {vol_fill}%;",
-                                div { class: "c-fill" }
-                                div { class: "c-knob" }
-                                div { class: "c-tip" }
-                            }
-                        }
-                        div { class: "c-mid",
-                            button { class: "isl-btn", title: "Предыдущий", onclick: move |_| send(IslandCmd::Prev), Icon { name: "prev", size: 18 } }
-                            button { class: if s.playing { "isl-play on" } else { "isl-play" }, title: if s.playing { "Пауза" } else { "Играть" },
-                                onclick: move |_| send(IslandCmd::TogglePlay),
-                                span { class: "pp pp-play", Icon { name: "play", size: 20 } }
-                                span { class: "pp pp-pause", Icon { name: "pause", size: 20 } }
-                            }
-                            button { class: "isl-btn", title: "Следующий", onclick: move |_| send(IslandCmd::Next), Icon { name: "next", size: 18 } }
-                        }
-                        div { class: "c-right",
-                            button { class: "isl-btn sm", title: "Вернуться в Nebula", onclick: move |_| send(IslandCmd::OpenApp),
-                                Icon { name: "to_bottom", size: 16 }
-                            }
-                        }
-                    }
-                    match s.next.clone() {
-                        Some((t, a)) => rsx! {
-                            button { class: "c-next rise", style: "--i: 3;", title: "Включить следующий трек",
-                                onclick: move |_| send(IslandCmd::Next),
-                                span { class: "c-next-l", "Далее" }
-                                span { class: "c-next-t", "{t}" }
-                                if !a.is_empty() {
-                                    span { class: "c-next-a", "— {a}" }
+                                    div {
+                                        class: "c-track h-track",
+                                        title: "Перемотка — щёлкните или тяните",
+                                        "data-scrub": "seek",
+                                        "data-dur": "{s.dur_ms}",
+                                        style: "--pos: {pct}%;",
+                                        div { class: "c-fill" }
+                                        div { class: "c-knob" }
+                                        div { class: "c-tip" }
+                                    }
+                                    div { class: "h-ctrl",
+                                        span { class: "h-time", "{fmt(s.pos_ms)}" }
+                                        button { class: "isl-btn", title: "Предыдущий", onclick: move |_| send(IslandCmd::Prev), Icon { name: "prev", size: 18 } }
+                                        button { class: if s.playing { "isl-play on" } else { "isl-play" }, title: if s.playing { "Пауза" } else { "Играть" },
+                                            onclick: move |_| send(IslandCmd::TogglePlay),
+                                            span { class: "pp pp-play", Icon { name: "play", size: 20 } }
+                                            span { class: "pp pp-pause", Icon { name: "pause", size: 20 } }
+                                        }
+                                        button { class: "isl-btn", title: "Следующий", onclick: move |_| send(IslandCmd::Next), Icon { name: "next", size: 18 } }
+                                        span { class: "h-time", "{fmt(s.dur_ms)}" }
+                                    }
                                 }
-                                Icon { name: "next", size: 13 }
+                                div { class: if s.playing { "h-lyrics" } else { "h-lyrics paused" },
+                                    match ly_ctx.clone() {
+                                        Some((i, prev, words, el, nexts)) => rsx! {
+                                            for k in once(i) {
+                                                div { key: "{k}", class: "h-ly-in",
+                                                    if let Some(p) = prev.clone() {
+                                                        div { class: "h-ly dim", "{p}" }
+                                                    }
+                                                    div { class: "h-ly cur",
+                                                        if words.is_empty() {
+                                                            span { class: "c-ly-dots", i {} i {} i {} }
+                                                        }
+                                                        for (wi, (w, dl, d)) in words.iter().enumerate() {
+                                                            span { key: "{wi}", class: "c-ly-w", style: "--dl: {*dl as i64 - el as i64}ms; --d: {d}ms;", "{w} " }
+                                                        }
+                                                    }
+                                                    for (j, n) in nexts.iter().enumerate() {
+                                                        div { key: "{j}", class: "h-ly dim", "{n}" }
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        None => rsx! {
+                                            div { class: "h-ly-empty",
+                                                if has_ly {
+                                                    span { class: "c-ly-dots", i {} i {} i {} }
+                                                } else {
+                                                    Icon { name: "lyrics", size: 22 }
+                                                    span { "Для этого трека нет синхронного текста" }
+                                                }
+                                            }
+                                        },
+                                    }
+                                    if has_ly {
+                                        span { class: "h-src", "LRCLIB" }
+                                    }
+                                }
                             }
-                        },
-                        None => rsx! {
-                            div { class: "c-next empty rise", style: "--i: 3;",
-                                span { class: "c-next-l", "Далее" }
-                                span { class: "c-next-t", "в очереди больше ничего нет" }
+                            // звук: лайк, громкость и устройство вывода
+                            div { class: "h-audio rise", style: "--i: 2;",
+                                button { class: if s.liked { "isl-btn sm on" } else { "isl-btn sm" }, title: "В избранное", onclick: move |_| send(IslandCmd::Like),
+                                    Icon { name: if s.liked { "heart" } else { "heart_outline" }, size: 16 }
+                                }
+                                button { class: "isl-btn sm", title: "Без звука", onclick: move |_| send(IslandCmd::Mute), Icon { name: vol_icon, size: 16 } }
+                                div {
+                                    class: "c-vol-track h-vol",
+                                    title: "Громкость — тяните или крутите колёсико над островком",
+                                    "data-scrub": "vol",
+                                    "data-max": "{s.max_volume}",
+                                    style: "--pos: {vol_fill}%;",
+                                    div { class: "c-fill" }
+                                    div { class: "c-knob" }
+                                    div { class: "c-tip" }
+                                }
+                                span { class: "h-vol-n", "{vol_pct}" }
+                                span { class: "h-dev", title: "Устройство вывода", Icon { name: "g_speaker", size: 13 }
+                                    span { if s.device.is_empty() { "Динамики" } else { "{s.device}" } }
+                                }
                             }
-                        },
+                        }
+                        // инструменты
+                        div { class: "h-tools",
+                            for (i, (id, icon, label)) in [
+                                ("area", "image", "Область"),
+                                ("full", "fullscreen", "Весь экран"),
+                                ("pick", "brush", "Пипетка"),
+                                ("clean", "sparkles", "Чистый текст"),
+                                ("clip", "copy", "Буфер"),
+                                ("timer", "timer", "Таймер"),
+                                ("theme", "palette", "Тема Windows"),
+                                ("lock", "eye_off", "Блокировка"),
+                            ].into_iter().enumerate() {
+                                button { key: "{id}", class: "h-tile rise", style: "--i: {1 + i / 2};",
+                                    onclick: move |_| match id {
+                                        "clip" => { clip_q.set(String::new()); go(Mode::Clip); }
+                                        "timer" => go(Mode::Tools),
+                                        _ => tool(id),
+                                    },
+                                    Icon { name: icon, size: 17 }
+                                    span { "{label}" }
+                                }
+                            }
+                        }
                     }
-                    }
-                    // меню островка — рядом с плеером, поменьше его
-                    div { class: "c-menu",
-                        button { class: "c-tile rise", style: "--i: 1;", title: "Снимок области экрана", onclick: move |_| tool("area"), Icon { name: "image", size: 16 } span { "Область" } }
-                        button { class: "c-tile rise", style: "--i: 1;", title: "Снимок всего экрана в буфер", onclick: move |_| tool("full"), Icon { name: "fullscreen", size: 16 } span { "Весь экран" } }
-                        button { class: "c-tile rise", style: "--i: 2;", title: "Цвет под курсором", onclick: move |_| tool("pick"), Icon { name: "brush", size: 16 } span { "Пипетка" } }
-                        button { class: "c-tile rise", style: "--i: 2;", title: "Убрать из скопированного текста лишнее", onclick: move |_| tool("clean"), Icon { name: "sparkles", size: 16 } span { "Чистый текст" } }
-                        button { class: "c-tile rise", style: "--i: 3;", title: "История буфера обмена", onclick: move |_| { clip_q.set(String::new()); go(Mode::Clip); }, Icon { name: "copy", size: 16 } span { "Буфер" } }
-                        button { class: "c-tile rise", style: "--i: 3;", title: "Плейлисты", onclick: move |_| open_lists(), Icon { name: "playlist", size: 16 } span { "Плейлисты" } }
-                        button { class: if s.eq_enabled { "c-tile rise on" } else { "c-tile rise" }, style: "--i: 4;", title: "Эквалайзер", onclick: move |_| open_eq(), Icon { name: "eq", size: 16 } span { "Эквалайзер" } }
-                        button { class: "c-tile rise", style: "--i: 4;", title: "Таймер, тема, блокировка и питание", onclick: move |_| go(Mode::Tools), Icon { name: "grid", size: 16 } span { "Ещё" } }
+                    // внизу — недавно слушали: щелчок включает
+                    div { class: "h-dock rise", style: "--i: 4;",
+                        span { class: "h-dock-l", "Недавние" }
+                        for (i, t) in recent_tracks.iter().take(9).enumerate() {
+                            button { key: "{t.id}", class: "h-rec", title: "{t.title} — {t.artist}",
+                                onclick: {
+                                    let list = recent_tracks.clone();
+                                    move |_| send(IslandCmd::Play(list.clone(), i))
+                                },
+                                if let Some(a) = t.art(ArtSize::Small) {
+                                    img { src: "{a}", alt: "", draggable: false }
+                                } else {
+                                    Icon { name: "music", size: 16 }
+                                }
+                            }
+                        }
+                        button { class: "h-rec add", title: "Найти и включить песню", onclick: move |_| open_search(), Icon { name: "add", size: 18 } }
                     }
                 }
                 // ── плейлисты ──
@@ -2561,6 +2630,69 @@ button { border: none; background: none; color: inherit; font: inherit; cursor: 
 .c-tile:hover { background: rgba(255, 255, 255, .11); color: #fff; }
 .c-tile:active { scale: .95; }
 .c-tile.on { background: color-mix(in srgb, var(--acc) 22%, transparent); }
+
+/* ── «Главная» островка: вкладки, плеер с текстом, звук, инструменты, недавние ── */
+.isl.m-card, .isl.m-card.has-ly { width: 740px; height: 428px; }
+.isl.m-card .isl-body { border-radius: 0 0 34px 34px; }
+.lay-card, .isl.has-ly .lay-card { width: 740px; height: 428px; padding: 12px 16px 14px; display: flex; flex-direction: column; gap: 10px; }
+.h-tabs { display: flex; align-items: center; gap: 4px; height: 40px; flex: 0 0 auto; }
+.h-tab { height: 36px; padding: 0 14px 0 12px; border-radius: 18px; display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 650; color: #fff;
+  background: rgba(255, 255, 255, .1); }
+.h-ico { width: 38px; height: 36px; border-radius: 12px; display: grid; place-items: center; color: #9a9a9a; transition: background 160ms, color 160ms, scale 260ms var(--spring); }
+.h-ico:hover { background: rgba(255, 255, 255, .08); color: #fff; }
+.h-ico:active { scale: .9; }
+.h-ico.on { color: var(--acc); }
+.h-gap { flex: 1; }
+.h-main { flex: 1; min-height: 0; display: flex; gap: 10px; }
+.h-left { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.h-player { flex: 1; min-height: 0; display: flex; border-radius: 22px; background: rgba(255, 255, 255, .045); overflow: hidden; position: relative; }
+/* мягкое отражение обложки под ней */
+.h-player::before { content: ""; position: absolute; left: 16px; top: 8px; width: 210px; height: 150px; border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--acc) 55%, transparent), transparent); filter: blur(26px); opacity: .55; pointer-events: none; }
+.h-np { position: relative; width: 244px; flex: 0 0 auto; padding: 14px 16px 10px; display: flex; flex-direction: column; align-items: center; }
+.h-queue { position: absolute; right: 12px; top: 12px; height: 24px; padding: 0 8px; border-radius: 12px; display: inline-flex; align-items: center; gap: 4px;
+  background: rgba(255, 255, 255, .1); font-size: 11.5px; font-weight: 700; color: #d6d6d6; }
+.h-art { width: 104px; height: 104px; border-radius: 18px; overflow: hidden; display: grid; place-items: center; background: #1c1c1c; color: #777;
+  box-shadow: 0 14px 30px -10px rgba(0, 0, 0, .7); }
+.h-art img { width: 100%; height: 100%; object-fit: cover; }
+.h-meta { margin-top: 10px; width: 100%; text-align: center; }
+.h-title { font-size: 15px; font-weight: 750; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.h-artist { margin-top: 2px; font-size: 12px; color: #9a9a9a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.h-track { width: 100%; margin-top: auto; flex: 0 0 auto; }
+.h-ctrl { width: 100%; display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
+.h-time { width: 34px; font-size: 10.5px; color: #7d7d7d; font-variant-numeric: tabular-nums; }
+.h-time:last-child { text-align: right; }
+.h-lyrics { position: relative; flex: 1; min-width: 0; padding: 18px 16px 24px; border-left: 1px solid rgba(255, 255, 255, .06); display: flex; flex-direction: column; justify-content: center; overflow: hidden;
+  mask-image: linear-gradient(transparent, #000 14%, #000 82%, transparent); }
+.h-ly-in { display: flex; flex-direction: column; gap: 10px; animation: ly-in 520ms var(--spring) both; }
+.h-ly { font-size: 14px; font-weight: 700; line-height: 1.3; }
+.h-ly.dim { color: rgba(255, 255, 255, .26); font-weight: 650; font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.h-ly.cur { font-size: 15.5px; }
+.h-lyrics.paused .c-ly-w, .h-lyrics.paused .c-ly-dots i { animation-play-state: paused; }
+.h-ly-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; color: #6f6f6f; font-size: 12px; }
+.h-src { position: absolute; right: 14px; bottom: 8px; font-size: 9.5px; font-weight: 800; letter-spacing: .08em; color: #555; }
+.h-audio { height: 48px; flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 0 10px; border-radius: 16px; background: rgba(255, 255, 255, .045); }
+.h-vol { flex: 1; width: auto; margin: 0 6px; }
+.h-vol-n { width: 28px; font-size: 11.5px; color: #8d8d8d; font-variant-numeric: tabular-nums; text-align: right; }
+.h-dev { max-width: 140px; height: 32px; padding: 0 10px; border-radius: 10px; display: inline-flex; align-items: center; gap: 6px; background: rgba(255, 255, 255, .07);
+  font-size: 11.5px; color: #cfcfcf; }
+.h-dev span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.h-tools { width: 252px; flex: 0 0 auto; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: repeat(4, 1fr); gap: 8px; }
+.h-tile { border-radius: 16px; background: rgba(255, 255, 255, .055); display: flex; align-items: center; gap: 10px; padding: 0 12px; text-align: left;
+  font-size: 12.5px; font-weight: 650; color: #e2e2e2; line-height: 1.15; transition: background 160ms, scale 260ms var(--spring); }
+.h-tile .icon { flex: 0 0 auto; color: #cfcfcf; transition: color 160ms; }
+.h-tile:hover { background: rgba(255, 255, 255, .1); }
+.h-tile:hover .icon { color: var(--acc); }
+.h-tile:active { scale: .95; }
+.h-dock { height: 62px; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-radius: 18px; background: rgba(255, 255, 255, .045); }
+.h-dock-l { font-size: 10.5px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: #6a6a6a; margin-right: 4px; writing-mode: vertical-rl; rotate: 180deg; }
+.h-rec { width: 44px; height: 44px; border-radius: 12px; overflow: hidden; flex: 0 0 auto; display: grid; place-items: center; background: #1b1b1b; color: #777;
+  transition: transform 260ms var(--spring), box-shadow 200ms; }
+.h-rec img { width: 100%; height: 100%; object-fit: cover; }
+.h-rec:hover { transform: translateY(-3px) scale(1.06); box-shadow: 0 8px 18px -6px rgba(0, 0, 0, .7); }
+.h-rec.add { background: transparent; box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, .14); border-radius: 12px; color: #9a9a9a; }
+.h-rec.add:hover { color: #fff; box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, .3); }
+.isl.m-card .h-rec { animation: rise 460ms var(--spring) both; }
 
 /* ── плейлисты ── */
 .isl.m-lists { width: 404px; height: 412px; }

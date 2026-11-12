@@ -887,6 +887,11 @@ pub fn App() -> Element {
                     let q = st.queue.peek();
                     q.index.and_then(|i| q.tracks.get(i + 1)).map(|t| (t.title.clone(), t.artist.clone()))
                 };
+                {
+                    let lib = st.library.peek();
+                    let key = format!("{}:{}", lib.history.len(), lib.history.first().map(|x| x.id.as_str()).unwrap_or(""));
+                    desk_island::publish_recent(&key, || lib.history.iter().take(12).cloned().collect());
+                }
                 desk_island::publish(IslandSnap {
                     has_track: now.is_some(),
                     track_id: now.as_ref().map(|t| t.id.clone()).unwrap_or_default(),
@@ -906,6 +911,11 @@ pub fn App() -> Element {
                     accent: st.accent.peek().clone(),
                     next,
                     weather_city: st.settings.peek().weather_city.clone(),
+                    queue_left: {
+                        let q = st.queue.peek();
+                        q.index.map(|i| q.tracks.len().saturating_sub(i + 1)).unwrap_or(0)
+                    },
+                    device: st.device.peek().clone(),
                     eq_enabled: st.settings.peek().eq_enabled,
                     eq_bands: st.settings.peek().eq_bands,
                     eq_preset: st.settings.peek().eq_preset.clone(),
