@@ -279,6 +279,49 @@ fn place(w: &DesktopContext, size: (f64, f64)) {
     let _ = w;
 }
 
+/// Окну с регионом Windows рисует рамку по-старому, без DWM: при каждой смене
+/// активности (щёлкнули по островку или мимо) поверх капли проступал
+/// классический заголовок «как в Windows 7» с кнопками. Убираем у окна стили
+/// заголовка (и не даём их вернуть) и глушим рисование рамки.
+#[cfg(windows)]
+fn no_classic_frame(win: &Window) {
+    use dioxus::desktop::tao::platform::windows::WindowExtWindows;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_STYLE, STYLESTRUCT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_NOZORDER, WM_NCACTIVATE, WM_NCPAINT, WM_STYLECHANGING, WS_CAPTION, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
+    };
+    const FRAME: u32 = WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+    // недокументированные сообщения, которыми тема рисует заголовок и рамку
+    const WM_NCUAHDRAWCAPTION: u32 = 0x00AE;
+    const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
+
+    unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: usize, _data: usize) -> LRESULT {
+        match msg {
+            WM_NCPAINT | WM_NCUAHDRAWCAPTION | WM_NCUAHDRAWFRAME => 0,
+            // активность пусть отслеживается как обычно, но без перерисовки рамки
+            WM_NCACTIVATE => DefSubclassProc(hwnd, msg, wp, -1),
+            WM_STYLECHANGING if wp as i32 == GWL_STYLE => {
+                if let Some(s) = (lp as *mut STYLESTRUCT).as_mut() {
+                    s.styleNew &= !FRAME;
+                }
+                DefSubclassProc(hwnd, msg, wp, lp)
+            }
+            _ => DefSubclassProc(hwnd, msg, wp, lp),
+        }
+    }
+    let hwnd = win.hwnd() as HWND;
+    // SAFETY: hwnd — живое окно островка из этого же потока; процедура
+    // подкласса — функция без состояния
+    unsafe {
+        SetWindowSubclass(hwnd, Some(proc), 0x4E49_534C, 0);
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        SetWindowLongPtrW(hwnd, GWL_STYLE, style & !(FRAME as isize));
+        SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    }
+}
+
 /// Курсор сейчас над видимой частью окна (экранные координаты Windows).
 fn cursor_inside(w: &DesktopContext) -> bool {
     let win = &w.window;
@@ -369,6 +412,8 @@ pub fn open(arrive_in: Duration) {
             window().close_window(ctx.id());
             return;
         }
+        #[cfg(windows)]
+        no_classic_frame(&ctx.window);
         place_window(&ctx);
         place(&ctx, Mode::Compact.window());
         ctx.window.set_visible(true);
