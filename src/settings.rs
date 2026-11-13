@@ -124,6 +124,12 @@ pub struct Settings {
     pub theme: String,
     /// Один раз включена тема «Монохром» (переход на стиль «Сцена»).
     pub style_mono_applied: bool,
+    /// Пользовательский фон обложки на сцене (путь к изображению / GIF).
+    #[serde(default)]
+    pub stage_cover_bg: Option<String>,
+    /// Последний выбранный фон — им можно снова заменить пластинку одним нажатием.
+    #[serde(default)]
+    pub stage_cover_bg_last: Option<String>,
     pub ui_scale: f32,
     pub animations: bool,
     pub anim_speed: f32,
@@ -212,8 +218,10 @@ impl Default for Settings {
             lyrics_width: 380.0,
             lyrics_autoscroll: true,
             lyrics_translit: false,
-            theme: "black".into(),
-            style_mono_applied: false,
+            theme: "mono".into(),
+            style_mono_applied: true,
+            stage_cover_bg: None,
+            stage_cover_bg_last: None,
             ui_scale: 1.0,
             animations: true,
             anim_speed: 1.0,
@@ -352,6 +360,6 @@ mod tests {
     fn unknown_fields_are_tolerated() {
         let s: Settings = serde_json::from_str(r#"{"volume": 1.5, "something_new": 1}"#).unwrap();
         assert_eq!(s.volume, 1.5);
-        assert_eq!(s.theme, "black");
+        assert_eq!(s.theme, "mono");
     }
 }

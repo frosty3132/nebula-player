@@ -375,7 +375,7 @@ pub fn LayoutTab() -> Element {
             Row { label: "Дизайн плеера Material 3", hint: "Волнистая полоса прогресса, кнопка-«сквиркл», тональные кнопки — как MD3-плеер",
                 Toggle { value: l.player_md3, onchange: move |v| edit(st, |t| t.layout.player_md3 = v) }
             }
-            Row { label: "Стиль «Сцена»", hint: "Заголовок с часами и плашкой трека, значки разделов справа, круглые кнопки плеера, пословная подсветка текста",
+            Row { label: "Стиль «Сцена»", hint: "Заголовок с часами, компактная колонка значков разделов, круглые кнопки плеера, пословная подсветка текста",
                 Toggle { value: l.stage_style, onchange: move |v| edit(st, |t| t.layout.stage_style = v) }
             }
             Row { label: "Высота плеера", Slider { value: l.player_height, min: 64.0, max: 140.0, step: 2.0, unit: " px", oninput: move |v| edit(st, |t| t.layout.player_height = v) } }

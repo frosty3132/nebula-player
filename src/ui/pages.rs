@@ -190,17 +190,43 @@ pub(super) static VISUALIZERS: std::sync::atomic::AtomicUsize = std::sync::atomi
 
 /// Принимает полосы спектра и выставляет высоту столбиков текущей страницы.
 const CAVA_JS: &str = r#"
+const cur = new Float32Array(32);
+const tgt = new Float32Array(32);
+let active = false, last = 0;
+function tick(now) {
+  const dt = last ? Math.min(0.05, Math.max(0.001, (now - last) / 1000)) : 1 / 60;
+  last = now;
+  const k = 1 - Math.pow(0.42, dt * 60);
+  const bars = document.querySelectorAll(".page-wrap.current .cava i");
+  let energy = 0;
+  for (let i = 0; i < bars.length; i++) {
+    const t = tgt[i] || 0;
+    const c = cur[i] + (t - cur[i]) * k;
+    cur[i] = c;
+    energy += Math.abs(c) + Math.abs(t);
+    bars[i].style.setProperty("--h", c.toFixed(3));
+  }
+  if (energy > 0.002) {
+    requestAnimationFrame(tick);
+  } else {
+    active = false;
+    last = 0;
+  }
+}
 while (true) {
   const v = await dioxus.recv();
-  const bars = document.querySelectorAll(".page-wrap.current .cava i");
-  for (let i = 0; i < bars.length; i++) bars[i].style.setProperty("--h", (v[i] || 0).toFixed(3));
+  for (let i = 0; i < tgt.length; i++) tgt[i] = v[i] || 0;
+  if (!active) {
+    active = true;
+    last = 0;
+    requestAnimationFrame(tick);
+  }
 }
 "#;
 
 /// Визуализатор спектра в духе cava (github.com/karlstav/cava) внутри
-/// планеты на главной: 24 столбика от низких частот к высоким, растут от
-/// центра. Данные — анализатор в аудиоколбэке, ~30 обновлений в секунду;
-/// в тишине и на паузе ничего не отправляется.
+/// планеты на главной: 24 столбика от низких частот к высоким, подстроенные
+/// под текущую частоту обновления монитора.
 #[component]
 fn Visualizer() -> Element {
     use std::sync::atomic::Ordering;
@@ -217,7 +243,7 @@ fn Visualizer() -> Element {
         let ev = document::eval(CAVA_JS);
         let mut quiet = 0u32;
         loop {
-            tokio::time::sleep(Duration::from_millis(33)).await;
+            tokio::time::sleep(super::display::frame_interval(super::display::app_hz(), super::display::low_power())).await;
             let v = svc().player.spectrum();
             if v.iter().all(|x| *x < 0.004) {
                 quiet += 1;

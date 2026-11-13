@@ -107,7 +107,7 @@ fn LyricsBody(prefix: String, #[props(default)] big: bool) -> Element {
         LyricsAlign::Center => "al-center",
         LyricsAlign::Right => "al-right",
     };
-    let size = if big { font * 1.6 } else { font };
+    let size = if big { font * 1.25 } else { font };
     let style = format!("--lyrics-fs: {size}px;");
     let body_class = format!("ly-body {align_class}{}", if blur { " blur" } else { "" });
 
@@ -340,8 +340,6 @@ pub fn FullscreenLyrics(leaving: bool) -> Element {
     use super::stage::{StageClock, StageCover, StagePlayer, StageTop, StageWidgets};
     let st = app_state();
     let lyr = st.lyrics.read().clone();
-    // название трека — крупным прозрачным «водяным знаком» за текстом
-    let mark = st.now.read().as_ref().map(|t| t.title.clone()).unwrap_or_default();
     let (sync_label, synced) = match &lyr {
         LyricsState::Found(l) if l.is_synced() => ("Синхронизировано", true),
         LyricsState::Found(_) => ("Без синхронизации", false),
@@ -363,13 +361,12 @@ pub fn FullscreenLyrics(leaving: bool) -> Element {
                     }
                 }
                 div { class: "stage-right",
-                    div { class: "stage-mark", "aria-hidden": "true", "{mark}" }
                     div { class: "stage-lyrics-head",
                         span { class: "stage-widget-title", "Текст" }
-                        span { class: if synced { "stage-tag on" } else { "stage-tag" }, span { class: "stage-tag-dot" } "{sync_label}" }
+                        span { class: if synced { "stage-tag on" } else { "stage-tag" }, span { class: "stage-tag-dot" } span { class: "st-label", "{sync_label}" } }
                         button { class: "stage-tag", title: "Найти текст вручную",
                             onclick: move |_| { let mut m = st.modal; m.set(Some(Modal::LyricsSearch)); },
-                            Icon { name: "lyrics", size: 13 } "LRCLIB"
+                            Icon { name: "lyrics", size: 13 } span { class: "st-label", "LRCLIB" }
                         }
                         div { class: "flex1" }
                         OffsetControls {}

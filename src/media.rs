@@ -28,6 +28,24 @@ pub fn sniff_mime(d: &[u8]) -> &'static str {
         "image/webp"
     } else if d.starts_with(b"BM") {
         "image/bmp"
+    } else if d.starts_with(&[0x00, 0x00, 0x01, 0x00]) || d.starts_with(&[0x00, 0x00, 0x02, 0x00]) {
+        "image/x-icon"
+    } else if d.starts_with(b"II*\0") || d.starts_with(b"MM\0*") {
+        "image/tiff"
+    } else if d.len() >= 12 && &d[4..8] == b"ftyp" {
+        match &d[8..12] {
+            b"avif" | b"avis" => "image/avif",
+            b"heic" | b"heix" | b"hevc" | b"hevx" | b"mif1" => "image/heif",
+            _ => "application/octet-stream",
+        }
+    } else if std::str::from_utf8(&d[..d.len().min(512)])
+        .ok()
+        .is_some_and(|s| {
+            let t = s.trim_start_matches('\u{feff}').trim_start();
+            t.starts_with("<svg") || (t.starts_with("<?xml") && t.contains("<svg"))
+        })
+    {
+        "image/svg+xml"
     } else {
         "application/octet-stream"
     }
@@ -35,12 +53,15 @@ pub fn sniff_mime(d: &[u8]) -> &'static str {
 
 fn mime_by_ext(p: &Path) -> &'static str {
     match p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("png") => "image/png",
+        Some("jpg" | "jpeg" | "jfif" | "pjpeg" | "pjp") => "image/jpeg",
+        Some("png" | "apng") => "image/png",
         Some("gif") => "image/gif",
         Some("webp") => "image/webp",
         Some("avif") => "image/avif",
+        Some("heic" | "heif") => "image/heif",
         Some("bmp") => "image/bmp",
+        Some("ico" | "cur") => "image/x-icon",
+        Some("tif" | "tiff") => "image/tiff",
         Some("svg") => "image/svg+xml",
         Some("mp4" | "m4v") => "video/mp4",
         Some("webm") => "video/webm",
@@ -183,11 +204,18 @@ impl Media {
 
 /// Отдаём только медиафайлы (картинки и видео) — WebView не получит доступ к прочим файлам.
 fn serve_file(path: &Path, range: Option<&str>) -> Option<Response<Vec<u8>>> {
-    let mime = mime_by_ext(path);
-    if mime.is_empty() {
-        return None;
-    }
     let mut f = std::fs::File::open(path).ok()?;
+    let mut mime = mime_by_ext(path);
+    if mime.is_empty() {
+        let mut head = [0u8; 512];
+        let n = f.read(&mut head).ok()?;
+        let sniffed = sniff_mime(&head[..n]);
+        if sniffed == "application/octet-stream" {
+            return None;
+        }
+        mime = sniffed;
+        f.seek(SeekFrom::Start(0)).ok()?;
+    }
     let len = f.metadata().ok()?.len();
     const CHUNK: u64 = 4 * 1024 * 1024;
 

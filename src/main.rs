@@ -196,7 +196,7 @@ fn main() {
     let cfg = Config::new()
         .with_window(wb)
         .with_background_color((0, 0, 0, 0))
-        .with_custom_head(format!("<meta name=\"color-scheme\" content=\"dark light\"><style>{BASE_CSS}{LOGIN_CSS}</style>"))
+        .with_custom_head(format!("<meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"dark light\"><style>{BASE_CSS}{LOGIN_CSS}</style>"))
         .with_data_directory(&p.webview)
         .with_disable_context_menu(!cfg!(debug_assertions))
         .with_windows_browser_args(browser_args)

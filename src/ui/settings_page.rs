@@ -86,7 +86,7 @@ pub fn SettingsPage(tab: SettingsTab) -> Element {
                                     Key::Enter => {
                                         let typed = query.peek().clone();
                                         if let Some(first) = super::settings_index::search(&typed).first() {
-                                            jump_to_setting(st, first.tab, first.label, first.whole_card);
+                                            jump_to_setting(st, first.tab, first.label, first.card, first.whole_card);
                                             query.set(String::new());
                                         }
                                     }
@@ -142,19 +142,21 @@ pub fn SettingsPage(tab: SettingsTab) -> Element {
 
 /// Перейти к настройке: открыть её вкладку, прокрутить к строке (или карточке)
 /// и коротко подсветить её.
-fn jump_to_setting(st: AppState, tab: SettingsTab, label: &str, whole_card: bool) {
+fn jump_to_setting(st: AppState, tab: SettingsTab, label: &str, card: &str, whole_card: bool) {
     if *st.route.peek() != Route::Settings(tab) {
         let mut r = st.route;
         r.set(Route::Settings(tab));
     }
     let label = serde_json::to_string(label).unwrap_or_default();
+    let card = serde_json::to_string(card).unwrap_or_default();
     let sel = if whole_card { ".set-card-title" } else { ".set-title" };
     document::eval(&format!(
         r#"(async () => {{
-  const want = {label};
+  const want = {label}, card = {card};
   for (let i = 0; i < 40; i++) {{
     const pane = document.querySelector(".page-wrap.current .set-pane:not(.leaving)") || document;
-    const el = [...pane.querySelectorAll("{sel}")].find(e => e.textContent.trim() === want);
+    // строка может быть скрыта условием (фон «Картинка», раздел ключей) — тогда через секунду подсвечиваем её карточку
+    const el = [...pane.querySelectorAll("{sel}")].find(e => e.textContent.trim() === want) || (i > 20 ? [...pane.querySelectorAll(".set-card-title")].find(e => e.textContent.trim() === card) : null);
     if (el) {{
       const box = el.closest(".set-row") || el.closest(".set-card") || el;
       box.scrollIntoView({{ block: "center", behavior: "smooth" }});
@@ -190,7 +192,7 @@ fn SearchResults(hits: Vec<(SettingsTab, &'static str, &'static str, &'static st
                         class: "set-hit",
                         onclick: move |_| {
                             onpick.call(());
-                            jump_to_setting(st, tab, label, whole);
+                            jump_to_setting(st, tab, label, card, whole);
                         },
                         span { class: "set-hit-icon", Icon { name: tab.icon(), size: 16 } }
                         span { class: "set-hit-text",
@@ -436,25 +438,26 @@ fn InterfaceTab() -> Element {
             }
             Row { label: "Эффект окна Windows", hint: "Mica и Acrylic работают в Windows 11; Acrylic может притормаживать при перетаскивании",
                 Seg { value: format!("{:?}", s.window_effect), options: opts(&[("None", "Нет"), ("Mica", "Mica"), ("Acrylic", "Acrylic"), ("Blur", "Blur")]),
-                    onchange: move |v: String| upd(st, |s| s.window_effect = match v.as_str() { "Mica" => WindowEffect::Mica, "Acrylic" => WindowEffect::Acrylic, "Blur" => WindowEffect::Blur, _ => WindowEffect::None }) }
+                    onchange: move |v: String| {
+                        let e = match v.as_str() { "Mica" => WindowEffect::Mica, "Acrylic" => WindowEffect::Acrylic, "Blur" => WindowEffect::Blur, _ => WindowEffect::None };
+                        upd(st, |s| s.window_effect = e);
+                        // эффект виден только сквозь полупрозрачное окно: в непрозрачной теме
+                        // (например, «Монохром») выбор раньше ничего не менял
+                        if e != WindowEffect::None && st.theme.peek().glass.window_opacity > 0.95 {
+                            let mut t = st.theme;
+                            t.write().glass.window_opacity = 0.82;
+                            toast(st, ToastKind::Info, "Прозрачность окна снижена до 82% — иначе эффект не виден");
+                        }
+                    } }
             }
             Row { label: "Масштаб интерфейса", hint: "Применяется, когда отпускаешь ползунок", Slider { value: s.ui_scale * 100.0, min: 70.0, max: 160.0, step: 5.0, unit: "%", commit_on_release: true, oninput: move |v: f32| upd(st, |s| s.ui_scale = v / 100.0) } }
             Row { label: "Поверх всех окон", Toggle { value: s.always_on_top, onchange: move |v| upd(st, |s| s.always_on_top = v) } }
-            Row { label: "Островок на рабочем столе", hint: "Свёрнутый плеер — капля вверху основного монитора поверх всех окон: карточка при наведении, громкость колёсиком, поиск песен. Окно Nebula на это время прячется",
+            Row { label: "Островок на рабочем столе", hint: "Свёрнутый плеер — капля вверху основного монитора поверх всех окон: плеер с текстом при наведении, громкость колёсиком, поиск, плейлисты и эквалайзер. Окно Nebula на это время прячется",
                 Toggle { value: s.island_desktop, onchange: move |v| upd(st, |s| s.island_desktop = v) }
             }
             Row { label: "Часы в «Сцене»", hint: "Оформление виджета часов; щелчок по самим часам тоже переключает",
                 Seg { value: s.clock_style.clone(), options: super::stage::CLOCK_STYLES.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect(),
                     onchange: move |v: String| upd(st, |s| s.clock_style = v) }
-            }
-            Row { label: "Погода в островке", hint: "Город — островок покажет погоду рядом с часами, когда музыка не играет. Пусто — без погоды",
-                input {
-                    class: "set-text",
-                    r#type: "text",
-                    placeholder: "Например, Москва",
-                    value: "{s.weather_city}",
-                    onchange: move |e: FormEvent| upd(st, |s| s.weather_city = e.value().trim().to_string()),
-                }
             }
             Row { label: "Сворачивать в трей при закрытии", hint: "Крестик прячет Nebula к часам у панели задач — музыка играет дальше. Вернуть окно или выйти — щелчком по значку",
                 Toggle { value: s.close_to_tray, onchange: move |v| upd(st, |s| s.close_to_tray = v) }
