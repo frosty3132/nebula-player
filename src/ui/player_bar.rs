@@ -253,7 +253,7 @@ pub fn Controls(order: Vec<Control>) -> Element {
             for c in order {
                 match c {
                     Control::Shuffle => rsx! {
-                        IconBtn { key: "{c:?}", icon: "shuffle", title: "Перемешать (S)", active: shuffle, size: 18, onclick: move |_| toggle_shuffle(st) }
+                        IconBtn { key: "{c:?}", icon: "shuffle", title: "Перемешать (S)", class: "pc-shuffle", active: shuffle, size: 18, onclick: move |_| toggle_shuffle(st) }
                     },
                     Control::Prev => rsx! {
                         IconBtn { key: "{c:?}", icon: "prev", title: "Предыдущий (Ctrl+←)", size: 22, onclick: move |_| prev(st) }
@@ -279,6 +279,7 @@ pub fn Controls(order: Vec<Control>) -> Element {
                             key: "{c:?}",
                             icon: if repeat == RepeatMode::One { "repeat_one" } else { "repeat" },
                             title: "Повтор (R)",
+                            class: "pc-repeat",
                             active: repeat != RepeatMode::Off,
                             size: 18,
                             onclick: move |_| cycle_repeat(st),
@@ -302,10 +303,16 @@ pub fn Progress() -> Element {
     let pct = if dur > 0 { (pos as f64 / dur as f64 * 100.0).min(100.0) } else { 0.0 };
     let buf_pct = (buffered * 100.0).clamp(0.0, 100.0);
     let pstate = *st.pstate.read();
+    let playing_u8 = u8::from(pstate == PlaybackState::Playing);
     rsx! {
         div { class: "progress-wrap", "data-el": "progress",
             span { class: "time", "{fmt_time(pos)}" }
-            div { class: if pstate == PlaybackState::Buffering { "progress buffering" } else { "progress" }, style: "--pp: {pct}%;",
+            div {
+                class: if pstate == PlaybackState::Buffering { "progress buffering" } else { "progress" },
+                style: "--pp: {pct}%;",
+                "data-pos": "{pos}",
+                "data-dur": "{dur}",
+                "data-play": "{playing_u8}",
                 div { class: "pr-buf", style: "width: {buf_pct}%;" }
                 div { class: "pr-fill", style: "width: {pct}%;" }
                 input {
@@ -336,9 +343,9 @@ pub fn Progress() -> Element {
 #[component]
 fn Extras(order: Vec<Extra>) -> Element {
     let st = app_state();
-    let (lyrics_open, queue_open) = {
+    let (lyrics_open, queue_open, lyrics_on) = {
         let s = st.settings.read();
-        (s.lyrics_open, s.queue_open)
+        (s.lyrics_open, s.queue_open, s.lyrics_enabled)
     };
     let eq_open = *st.eq_open.read();
     let fs = *st.fullscreen.read();
@@ -347,21 +354,25 @@ fn Extras(order: Vec<Extra>) -> Element {
             for x in order {
                 match x {
                     Extra::Like => rsx! {},
+                    // тексты выключены в настройках — кнопка ничего бы не открыла
+                    Extra::Lyrics if !lyrics_on => rsx! {},
                     Extra::Lyrics => rsx! {
                         IconBtn { key: "{x:?}", icon: "lyrics", title: "Текст сбоку (L)", active: lyrics_open, size: 19,
                             onclick: move |_| crate::ui::actions::toggle_lyrics(st) }
                     },
                     Extra::Fullscreen => rsx! {
-                        IconBtn { key: "{x:?}", icon: "fullscreen", title: "Текст на весь экран (F)", active: fs, size: 19,
+                        IconBtn { key: "{x:?}", icon: "fullscreen", title: "Текст на весь экран (F)", class: "px-fs", active: fs, size: 19,
                             onclick: move |_| { let mut f = st.fullscreen; let v = !*f.peek(); f.set(v); } }
                     },
                     Extra::Queue => rsx! {
-                        IconBtn { key: "{x:?}", icon: "queue", title: "Очередь (Q)", active: queue_open, size: 19,
+                        IconBtn { key: "{x:?}", icon: "queue", title: "Очередь (Q)", class: "px-queue", active: queue_open, size: 19,
                             onclick: move |_| { let mut s = st.settings; let v = !s.peek().queue_open; s.write().queue_open = v; } }
                     },
                     Extra::Eq => rsx! {
-                        IconBtn { key: "{x:?}", icon: "eq", title: "Эквалайзер", active: eq_open, size: 19,
-                            onclick: move |_| set_eq_open(st, !*st.eq_open.peek()) }
+                        IconBtn { key: "{x:?}", icon: "eq", title: "Эквалайзер", class: "px-eq", active: eq_open, size: 19,
+                            // значок читаем до вызова: иначе чтение держится, пока
+                            // set_eq_open пишет тот же сигнал, и Dioxus падает
+                            onclick: move |_| { let open = *st.eq_open.peek(); set_eq_open(st, !open); } }
                     },
                     Extra::Volume => rsx! { Volume { key: "{x:?}" } },
                 }

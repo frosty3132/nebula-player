@@ -697,190 +697,159 @@ impl Theme {
 
 // ───────────────────────────── встроенные темы ─────────────────────────────
 
+fn mono_base(t: &mut Theme) {
+    t.colors = Colors {
+        bg: "#070707".into(),
+        surface: "#111111".into(),
+        surface2: "#1a1a1a".into(),
+        text: "#f4f4f4".into(),
+        muted: "#8b8b8b".into(),
+        accent: "#ffffff".into(),
+        accent2: "#bdbdbd".into(),
+        glow: "#ffffff".into(),
+        danger: "#ff6b6b".into(),
+        border: "rgba(255,255,255,0.07)".into(),
+    };
+    t.shape = Shape {
+        radius: 18.0,
+        radius_small: 12.0,
+        radius_large: 20.0,
+        border_width: 1.0,
+        cover_radius: 12.0,
+        button_radius: 999.0,
+    };
+    t.layout.sidebar = SidebarPos::Left;
+    t.layout.sidebar_compact = true;
+    t.layout.show_logo = false;
+    t.layout.stage_style = true;
+    t.layout.player = PlayerPos::Bottom;
+    t.layout.player_style = PlayerStyle::Classic;
+    t.layout.cover_shape = CoverShape::Rounded;
+    t.glass = Glass { blur: 0.0, opacity: 0.96, saturation: 100.0, window_opacity: 1.0, glow: 0.0, liquid: false };
+    t.background = Background { kind: BgKind::Solid, nebula: false, dim: 0.0, ..Background::default() };
+    t.stars = Stars { density: 0.0, twinkle: false, shooting: false, ..Stars::default() };
+}
+
 fn theme(id: &str, name: &str, f: impl FnOnce(&mut Theme)) -> Theme {
     let mut t = Theme { id: id.into(), name: name.into(), ..Default::default() };
+    mono_base(&mut t);
     f(&mut t);
     t.normalized()
 }
 
+/// Встроенные темы, объединённые архитектурой «Монохром»: компактная левая
+/// панель, карточки без визуального шума, единый заголовок «Сцена» и сдержанные
+/// тональные акценты. Тема «Монохром» идёт первой и используется по умолчанию.
 pub fn builtin_themes() -> Vec<Theme> {
     vec![
+        theme("mono", "Монохром", |_| {}),
         theme("black", "Чёрная", |t| {
-            // обычная чёрная тема: без звёзд, туманностей, свечения и прозрачности
-            t.colors = Colors {
-                bg: "#000000".into(),
-                surface: "#0e0e0e".into(),
-                surface2: "#171717".into(),
-                text: "#f2f2f2".into(),
-                muted: "#8e8e8e".into(),
-                accent: "#ffffff".into(),
-                accent2: "#c8c8c8".into(),
-                glow: "#ffffff".into(),
-                danger: "#ff5c5c".into(),
-                border: "rgba(255,255,255,0.08)".into(),
-            };
-            t.shape = Shape { radius: 14.0, radius_small: 10.0, radius_large: 20.0, border_width: 1.0, cover_radius: 8.0, button_radius: 999.0 };
-            t.glass = Glass { blur: 0.0, opacity: 0.94, saturation: 100.0, window_opacity: 1.0, glow: 0.0, liquid: false };
-            t.background = Background { kind: BgKind::Solid, nebula: false, dim: 0.0, ..Background::default() };
-            t.stars = Stars { density: 0.0, twinkle: false, shooting: false, ..Stars::default() };
+            t.colors.bg = "#000000".into();
+            t.colors.surface = "#0b0b0b".into();
+            t.colors.surface2 = "#141414".into();
+            t.colors.border = "rgba(255,255,255,0.08)".into();
+            t.glass.opacity = 0.98;
         }),
-        // тёмный монохром: мягко-чёрные карточки с тонкой рамкой, крупные
-        // скругления, белые элементы управления, без свечения и звёзд
-        theme("mono", "Монохром", |t| {
-            t.colors = Colors {
-                bg: "#070707".into(),
-                surface: "#111111".into(),
-                surface2: "#1a1a1a".into(),
-                text: "#f4f4f4".into(),
-                muted: "#8b8b8b".into(),
-                accent: "#ffffff".into(),
-                accent2: "#bdbdbd".into(),
-                glow: "#ffffff".into(),
-                danger: "#ff6b6b".into(),
-                border: "rgba(255,255,255,0.07)".into(),
-            };
-            t.shape = Shape { radius: 18.0, radius_small: 12.0, radius_large: 20.0, border_width: 1.0, cover_radius: 12.0, button_radius: 999.0 };
-            // значки разделов — вертикальной колонкой слева (только значки)
-            t.layout.sidebar = SidebarPos::Left;
-            t.layout.sidebar_compact = true;
-            t.layout.show_logo = false;
-            t.layout.stage_style = true;
-            t.glass = Glass { blur: 0.0, opacity: 0.96, saturation: 100.0, window_opacity: 1.0, glow: 0.0, liquid: false };
-            t.background = Background { kind: BgKind::Solid, nebula: false, dim: 0.0, ..Background::default() };
-            t.stars = Stars { density: 0.0, twinkle: false, shooting: false, ..Stars::default() };
+        theme("galaxy", "Галактика", |t| {
+            t.colors.bg = "#07070b".into();
+            t.colors.surface = "#101018".into();
+            t.colors.surface2 = "#181823".into();
+            t.colors.muted = "#8d8da0".into();
+            t.colors.accent = "#d4d0ec".into();
+            t.colors.accent2 = "#9a96b8".into();
+            t.colors.glow = "#d4d0ec".into();
+            t.colors.border = "rgba(220,220,245,0.07)".into();
         }),
-        theme("galaxy", "Галактика", |_| {}),
-        // «жидкое стекло» как в iOS: молочные полупрозрачные панели со световым
-        // краем поверх яркой туманности (рецепт — Liquid Glass Studio, MIT)
         theme("liquid", "Жидкое стекло", |t| {
-            t.colors = Colors {
-                bg: "#0a0c1c".into(),
-                surface: "#ffffff".into(),
-                surface2: "#e8ecff".into(),
-                text: "#ffffff".into(),
-                muted: "#c9cde6".into(),
-                accent: "#7dd3fc".into(),
-                accent2: "#c4b5fd".into(),
-                glow: "#93c5fd".into(),
-                danger: "#fb7185".into(),
-                border: "rgba(255,255,255,0.28)".into(),
-            };
-            t.shape = Shape { radius: 26.0, radius_small: 16.0, radius_large: 32.0, border_width: 1.0, cover_radius: 14.0, button_radius: 999.0 };
-            t.glass = Glass { blur: 24.0, opacity: 0.12, saturation: 180.0, window_opacity: 0.96, glow: 0.35, liquid: true };
-            t.background.nebula = true;
-            t.background.nebula_intensity = 1.0;
+            t.colors.bg = "#08090c".into();
+            t.colors.surface = "#13151b".into();
+            t.colors.surface2 = "#1c1f27".into();
+            t.colors.muted = "#9499a6".into();
+            t.colors.accent = "#e5e7eb".into();
+            t.colors.accent2 = "#9ca3af".into();
+            t.colors.glow = "#ffffff".into();
+            t.colors.border = "rgba(255,255,255,0.12)".into();
+            t.glass = Glass { blur: 16.0, opacity: 0.78, saturation: 125.0, window_opacity: 0.96, glow: 0.0, liquid: false };
         }),
-        // Material 3 (Material You): тональные поверхности, плеер с волнистым прогрессом
         theme("material", "Material 3", |t| {
-            t.colors = Colors {
-                bg: "#141218".into(),
-                surface: "#211f26".into(),
-                surface2: "#2b2930".into(),
-                text: "#e6e0e9".into(),
-                muted: "#cac4d0".into(),
-                accent: "#d0bcff".into(),
-                accent2: "#ccc2dc".into(),
-                glow: "#d0bcff".into(),
-                danger: "#f2b8b5".into(),
-                border: "rgba(202,196,208,0.12)".into(),
-            };
-            t.shape = Shape { radius: 24.0, radius_small: 16.0, radius_large: 28.0, border_width: 0.0, cover_radius: 20.0, button_radius: 999.0 };
-            t.glass = Glass { blur: 0.0, opacity: 0.96, saturation: 100.0, window_opacity: 1.0, glow: 0.0, liquid: false };
-            t.background = Background { kind: BgKind::Solid, nebula: false, dim: 0.0, ..Background::default() };
-            t.stars = Stars { density: 0.0, twinkle: false, shooting: false, ..Stars::default() };
+            t.colors.bg = "#100f12".into();
+            t.colors.surface = "#19181d".into();
+            t.colors.surface2 = "#232128".into();
+            t.colors.text = "#efedf4".into();
+            t.colors.muted = "#9b96a6".into();
+            t.colors.accent = "#ded7ec".into();
+            t.colors.accent2 = "#aba4bc".into();
+            t.colors.glow = "#ded7ec".into();
+            t.colors.border = "rgba(230,225,240,0.08)".into();
             t.layout.player_md3 = true;
-            t.layout.cover_shape = CoverShape::Rounded;
         }),
         theme("orion", "Туманность Ориона", |t| {
-            t.colors = Colors {
-                bg: "#0b0410".into(),
-                surface: "#1d0b24".into(),
-                surface2: "#2b1035".into(),
-                text: "#ffe9f6".into(),
-                muted: "#c79ab8".into(),
-                accent: "#ec4899".into(),
-                accent2: "#f59e0b".into(),
-                glow: "#f472b6".into(),
-                ..Colors::default()
-            };
-            t.layout.player = PlayerPos::Floating;
-            t.layout.player_style = PlayerStyle::Centered;
-            t.layout.cover_shape = CoverShape::Circle;
-            t.shape.radius = 22.0;
-            t.shape.radius_large = 30.0;
+            t.colors.bg = "#0a0709".into();
+            t.colors.surface = "#141013".into();
+            t.colors.surface2 = "#1d161b".into();
+            t.colors.text = "#f5eff3".into();
+            t.colors.muted = "#9c8b95".into();
+            t.colors.accent = "#ebcadb".into();
+            t.colors.accent2 = "#b899aa".into();
+            t.colors.glow = "#ebcadb".into();
+            t.colors.border = "rgba(255,230,244,0.07)".into();
         }),
         theme("aurora", "Северное сияние", |t| {
-            t.colors = Colors {
-                bg: "#020a0c".into(),
-                surface: "#0a1c21".into(),
-                surface2: "#0f2a31".into(),
-                text: "#e6fff8".into(),
-                muted: "#8fbfb4".into(),
-                accent: "#34d399".into(),
-                accent2: "#60a5fa".into(),
-                glow: "#2dd4bf".into(),
-                ..Colors::default()
-            };
-            t.stars.density = 0.7;
-            t.background.nebula_intensity = 1.0;
-            t.layout.sidebar_compact = true;
+            t.colors.bg = "#060909".into();
+            t.colors.surface = "#0e1414".into();
+            t.colors.surface2 = "#151f1f".into();
+            t.colors.text = "#eef5f4".into();
+            t.colors.muted = "#829795".into();
+            t.colors.accent = "#cfe8e3".into();
+            t.colors.accent2 = "#8fb3ad".into();
+            t.colors.glow = "#cfe8e3".into();
+            t.colors.border = "rgba(220,250,245,0.07)".into();
         }),
         theme("supernova", "Сверхновая", |t| {
-            t.colors = Colors {
-                bg: "#0d0503".into(),
-                surface: "#211008".into(),
-                surface2: "#30170c".into(),
-                text: "#fff1e6".into(),
-                muted: "#cfa58b".into(),
-                accent: "#f97316".into(),
-                accent2: "#facc15".into(),
-                glow: "#fb923c".into(),
-                ..Colors::default()
-            };
-            t.layout.cover_shape = CoverShape::Vinyl;
-            t.stars.speed = 1.8;
+            t.colors.bg = "#0a0807".into();
+            t.colors.surface = "#15110f".into();
+            t.colors.surface2 = "#1f1916".into();
+            t.colors.text = "#f5f0ec".into();
+            t.colors.muted = "#9c8d84".into();
+            t.colors.accent = "#f0d6c2".into();
+            t.colors.accent2 = "#bda28e".into();
+            t.colors.glow = "#f0d6c2".into();
+            t.colors.border = "rgba(255,235,220,0.07)".into();
         }),
         theme("synthwave", "Синтвейв", |t| {
-            t.colors = Colors {
-                bg: "#0d0221".into(),
-                surface: "#1a0b3b".into(),
-                surface2: "#26104f".into(),
-                text: "#fbe7ff".into(),
-                muted: "#b48ad6".into(),
-                accent: "#ff2a6d".into(),
-                accent2: "#05d9e8".into(),
-                glow: "#ff2a6d".into(),
-                ..Colors::default()
-            };
-            t.font.letter_spacing = 0.2;
-            t.layout.player = PlayerPos::Floating;
-            t.background.kind = BgKind::Gradient;
-            t.glass.glow = 0.85;
+            t.colors.bg = "#09070d".into();
+            t.colors.surface = "#13101a".into();
+            t.colors.surface2 = "#1c1726".into();
+            t.colors.text = "#f3eff8".into();
+            t.colors.muted = "#968ca8".into();
+            t.colors.accent = "#f0c8d8".into();
+            t.colors.accent2 = "#9cb4c9".into();
+            t.colors.glow = "#f0c8d8".into();
+            t.colors.border = "rgba(240,220,255,0.08)".into();
         }),
         theme("glass", "Чистое стекло", |t| {
-            t.colors.bg = "#0a0a14".into();
-            t.glass = Glass { blur: 30.0, opacity: 0.38, saturation: 180.0, window_opacity: 0.55, glow: 0.4, liquid: false };
-            t.background.nebula_intensity = 0.45;
-            t.stars.density = 0.5;
+            t.colors.bg = "#08080a".into();
+            t.colors.surface = "#111116".into();
+            t.colors.surface2 = "#191920".into();
+            t.colors.border = "rgba(255,255,255,0.09)".into();
+            t.glass = Glass { blur: 20.0, opacity: 0.72, saturation: 120.0, window_opacity: 0.92, glow: 0.0, liquid: false };
         }),
         theme("moonlight", "Лунный свет", |t| {
             t.dark = false;
             t.colors = Colors {
-                bg: "#e8ecf8".into(),
+                bg: "#f2f3f5".into(),
                 surface: "#ffffff".into(),
-                surface2: "#eef1fb".into(),
-                text: "#14172e".into(),
-                muted: "#5b618a".into(),
-                accent: "#6366f1".into(),
-                accent2: "#0ea5e9".into(),
-                glow: "#818cf8".into(),
-                danger: "#e11d48".into(),
-                border: "rgba(20,23,46,0.10)".into(),
+                surface2: "#e8eaee".into(),
+                text: "#111113".into(),
+                muted: "#6b6e76".into(),
+                accent: "#16161a".into(),
+                accent2: "#52555d".into(),
+                glow: "#16161a".into(),
+                danger: "#dc2626".into(),
+                border: "rgba(17,17,19,0.09)".into(),
             };
-            t.glass.opacity = 0.72;
-            t.glass.glow = 0.3;
-            t.background.kind = BgKind::Gradient;
-            t.stars.color = "#6366f1".into();
+            t.glass = Glass { blur: 0.0, opacity: 0.94, saturation: 100.0, window_opacity: 1.0, glow: 0.0, liquid: false };
+            t.stars.color = "#16161a".into();
         }),
     ]
 }
@@ -1033,6 +1002,10 @@ mod tests {
         for t in &list {
             assert!(t.layout.controls.contains(&Control::Play));
             assert_eq!(t.layout.nav.len(), NAV_ITEMS.len());
+            assert!(t.layout.stage_style, "{} should inherit mono stage_style", t.id);
+            assert_eq!(t.layout.sidebar, SidebarPos::Left, "{} should use compact left sidebar", t.id);
         }
+        assert_eq!(list[0].id, "mono");
+        assert_eq!(Settings::default().theme, "mono");
     }
 }

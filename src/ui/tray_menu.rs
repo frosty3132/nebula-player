@@ -12,7 +12,7 @@ use dioxus::desktop::{use_wry_event_handler, window, Config, DesktopContext, Win
 use dioxus::prelude::*;
 use parking_lot::Mutex;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
 /// Что показывает меню: играет ли музыка и состояние переключателей.
@@ -37,6 +37,8 @@ static SHOWN: AtomicU32 = AtomicU32::new(0);
 /// Меню сейчас на экране, и с какого момента (первые мгновения не
 /// закрываемся: это ещё отпускают кнопку, которой открыли меню).
 static OPEN_AT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+/// Окно меню сообщило о потере фокуса — проверить, ушёл ли он на самом деле.
+static FOCUS_LOST: AtomicBool = AtomicBool::new(false);
 
 /// Окно меню (размер в логических пикселях): панель прижата к правому
 /// нижнему углу.
@@ -83,7 +85,7 @@ pub fn init() {
     let cfg = Config::new()
         .with_window(wb)
         .with_background_color((0, 0, 0, 0))
-        .with_custom_head(format!("<meta name=\"color-scheme\" content=\"dark\"><style>{MENU_CSS}</style>"))
+        .with_custom_head(format!("<meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"dark\"><style>{MENU_CSS}</style>"))
         .with_data_directory(&p.webview)
         .with_disable_context_menu(true)
         .with_windows_browser_args(crate::webview_args());
@@ -116,6 +118,7 @@ pub fn show_at(x: f64, y: f64) {
     win.set_outer_position(PhysicalPosition::new(px.round() as i32, py.round() as i32));
     SHOWN.fetch_add(1, Ordering::Relaxed);
     *OPEN_AT.lock() = Some(std::time::Instant::now());
+    FOCUS_LOST.store(false, Ordering::Relaxed);
     win.set_visible(true);
     win.set_focus();
 }
@@ -144,6 +147,26 @@ fn mouse_down() -> bool {
     }
     #[cfg(not(windows))]
     false
+}
+
+/// Окно меню (или его дочернее окно WebView2) сейчас на переднем плане.
+fn menu_is_foreground() -> bool {
+    #[cfg(windows)]
+    {
+        use dioxus::desktop::tao::platform::windows::WindowExtWindows;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetAncestor, GetForegroundWindow, GA_ROOT};
+        let me = window().window.hwnd();
+        // SAFETY: только чтение дескрипторов окон
+        unsafe {
+            let fg = GetForegroundWindow();
+            if fg.is_null() {
+                return false;
+            }
+            fg as isize == me || GetAncestor(fg, GA_ROOT) as isize == me
+        }
+    }
+    #[cfg(not(windows))]
+    true
 }
 
 /// Курсор над окном меню.
@@ -179,6 +202,19 @@ fn MenuRoot() -> Element {
             if opened.is_some_and(|t| t.elapsed() > Duration::from_millis(250)) && mouse_down() && !cursor_in_window() {
                 hide();
             }
+            if FOCUS_LOST.swap(false, Ordering::Relaxed) {
+                if let Some(t) = *OPEN_AT.lock() {
+                    if !menu_is_foreground() {
+                        if t.elapsed() < Duration::from_millis(400) {
+                            // сразу после щелчка по значку фокус забирает панель
+                            // задач — возвращаем его меню
+                            window().set_focus();
+                        } else {
+                            hide();
+                        }
+                    }
+                }
+            }
             let g = SHOWN.load(Ordering::Relaxed);
             if *shown.peek() != g {
                 shown.set(g);
@@ -186,12 +222,15 @@ fn MenuRoot() -> Element {
             tokio::time::sleep(Duration::from_millis(30)).await;
         }
     });
-    // щёлкнули мимо — меню закрывается, как системное
+    // щёлкнули мимо — меню закрывается, как системное. Сразу не прячем:
+    // «потерю фокуса» tao присылает и когда фокус клавиатуры просто уходит
+    // внутрь WebView2 (дочернее окно), — меню при этом всё ещё активно.
+    // Решает цикл выше: смотрит, чьё окно на переднем плане.
     use_wry_event_handler(move |event, _| {
         use dioxus::desktop::tao::event::{Event, WindowEvent};
         if let Event::WindowEvent { window_id, event: WindowEvent::Focused(false), .. } = event {
             if *window_id == my_id {
-                hide();
+                FOCUS_LOST.store(true, Ordering::Relaxed);
             }
         }
     });

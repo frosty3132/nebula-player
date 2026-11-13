@@ -111,15 +111,73 @@ pub fn style_window_frame() {
 
 /// Развернуть/восстановить окно (системная анимация выключена — без вспышки).
 pub fn toggle_maximized_quiet() {
+    set_window_transitions(false);
     window().toggle_maximized();
 }
 
-/// Свернуть с системной анимацией Windows, как обычное приложение. Она остаётся
-/// включённой до возвращения окна (см. «__visible» в mod.rs), чтобы и
-/// разворачивание из панели задач было системным.
+/// Свернуть без включения системных переходов DWM — чтобы при разворачивании
+/// за прозрачным окном не мелькала классическая рамка Windows 7.
 pub fn minimize_app(_state: AppState) {
-    set_window_transitions(true);
+    set_window_transitions(false);
     window().set_minimized(true);
+}
+
+/// Полный экран (F11) с анимацией: окно прячется в «начальный кадр» анимации
+/// ещё до переключения, иначе на долю секунды мелькал готовый кадр.
+pub fn toggle_fullscreen_animated(st: AppState) {
+    let w = window();
+    let to_fs = w.fullscreen().is_none();
+    let anim = {
+        let s = st.settings.peek();
+        s.animations && !s.low_power
+    };
+    if anim {
+        let cls = if to_fs { "win-pre-grow" } else { "win-pre-shrink" };
+        let _ = document::eval(&format!(
+            "const a = document.querySelector('.app'); if (a) {{ a.classList.add('{cls}'); setTimeout(() => a.classList.remove('{cls}'), 700); }}"
+        ));
+    }
+    w.set_fullscreen(to_fs);
+}
+
+/// Переключает режим интерфейса: «Музыка» (разделы, поиск, плейлисты) или
+/// «Сцена» (обложка, плеер и текст на весь экран).
+pub fn set_app_mode(st: AppState, stage: bool) {
+    if !stage && window().fullscreen().is_some() {
+        window().set_fullscreen(false);
+    }
+    let mut fs = st.fullscreen;
+    fs.set(stage);
+}
+
+/// Переключатель «Музыка | Сцена» по центру заголовка: стеклянная капсула,
+/// под выбранным пунктом скользит светлая подложка, у каждого — свой значок.
+#[component]
+pub fn ModeSwitch() -> Element {
+    let st = app_state();
+    let stage = *st.fullscreen.read();
+    rsx! {
+        div {
+            class: if stage { "mode-switch on-stage" } else { "mode-switch" },
+            onmousedown: move |e| e.stop_propagation(),
+            ondoubleclick: move |e| e.stop_propagation(),
+            span { class: "mode-glider" }
+            button {
+                class: if !stage { "mode-btn active" } else { "mode-btn" },
+                title: "Музыка: разделы, поиск и плейлисты (Esc)",
+                onclick: move |_| set_app_mode(st, false),
+                Icon { name: "music", size: 15 }
+                span { "Музыка" }
+            }
+            button {
+                class: if stage { "mode-btn active" } else { "mode-btn" },
+                title: "Сцена: обложка, плеер и текст на весь экран (F)",
+                onclick: move |_| set_app_mode(st, true),
+                Icon { name: "sparkles", size: 15 }
+                span { "Сцена" }
+            }
+        }
+    }
 }
 
 #[component]
@@ -165,8 +223,8 @@ pub fn TitleBar() -> Element {
             }
         }
     };
-    // стиль «Сцена»: слева название и часы, по центру плашка трека, справа
-    // значки разделов, переключатель «Медиатека / Сцена» и кнопки окна
+    // стиль «Сцена»: слева название и часы, по центру свёрнутый островок, справа
+    // значки разделов, переключатель «Музыка / Сцена» по центру и кнопки окна
     if layout.stage_style {
         return rsx! {
             header {
@@ -193,20 +251,12 @@ pub fn TitleBar() -> Element {
                     }
                 }
                 div { class: "stage-center",
+                    ModeSwitch {}
                     if collapsed {
                         Island {}
-                    } else {
-                        super::stage::NowPill { open_stage: true }
                     }
                 }
                 div { class: "tb-right stage-side end",
-                    div { class: "stage-switch", onmousedown: move |e| e.stop_propagation(), ondoubleclick: move |e| e.stop_propagation(),
-                        button { class: "stage-switch-btn active", "Медиатека" }
-                        button { class: "stage-switch-btn", title: "Сцена: обложка, плеер и текст на весь экран (F)",
-                            onclick: move |_| { let mut f = st.fullscreen; f.set(true); },
-                            "Сцена"
-                        }
-                    }
                     IconBtn {
                         icon: "brush",
                         title: "Режим редактирования интерфейса (Ctrl+E)",
@@ -269,6 +319,7 @@ pub fn TitleBar() -> Element {
                     }
                 }
             }
+            div { class: "tb-center", ModeSwitch {} }
             div { class: "tb-right",
                 IconBtn {
                     icon: "brush",

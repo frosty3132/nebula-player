@@ -1,30 +1,21 @@
 //! «Сцена» — полноэкранный режим «сейчас играет»: слева колонка карточек
 //! (обложка, плеер, часы и листаемый виджет), справа крупный текст песни.
 //! Верхняя полоса — название и часы, плашка текущего трека по центру,
-//! переключатель «Медиатека / Сцена» и кнопки окна.
+//! переключатель «Музыка / Сцена» по центру и кнопки окна.
 
 use super::actions::*;
-use super::chrome::{close_app, minimize_app, toggle_maximized_quiet};
+use super::chrome::{close_app, minimize_app, toggle_maximized_quiet, ModeSwitch};
 use super::icons::{Icon, LOGO_SVG};
 use super::player_bar::{Controls, Cover};
+use super::settings_page::upd;
 use super::state::*;
-use super::tracks::PlayingBars;
 use super::widgets::IconBtn;
 use crate::audio::{PlaybackState, EQ_FREQS};
-use crate::model::{fmt_listening, ArtSize};
+use crate::model::{file_url, fmt_listening, ArtSize};
 use crate::services::svc;
 use dioxus::desktop::window;
 use dioxus::prelude::*;
 use std::time::Duration;
-
-/// Закрыть сцену (и полноэкранное окно, если оно было включено из неё).
-pub fn close_stage(st: AppState) {
-    if window().fullscreen().is_some() {
-        window().set_fullscreen(false);
-    }
-    let mut f = st.fullscreen;
-    f.set(false);
-}
 
 /// Время, дата и день недели — по часам системы (через страницу: так проще
 /// всего получить местное время и русские названия месяцев).
@@ -71,41 +62,6 @@ pub fn BrandClock() -> Element {
     }
 }
 
-/// Плашка текущего трека: обложка, название, «играет». На сцене щелчок —
-/// пауза/игра, в основном окне — открыть сцену.
-#[component]
-pub fn NowPill(#[props(default)] open_stage: bool) -> Element {
-    let st = app_state();
-    let now = st.now.read().clone();
-    let playing = matches!(*st.pstate.read(), PlaybackState::Playing | PlaybackState::Buffering);
-    let art = now.as_ref().and_then(|t| t.art(ArtSize::Small));
-    let Some(t) = now else { return rsx! {} };
-    let title = if open_stage { "Открыть сцену (F)" } else if playing { "Пауза" } else { "Играть" };
-    rsx! {
-        button {
-            class: "stage-pill",
-            title: "{title}",
-            onmousedown: move |e| e.stop_propagation(),
-            ondoubleclick: move |e| e.stop_propagation(),
-            onclick: move |_| {
-                if open_stage {
-                    let mut f = st.fullscreen;
-                    f.set(true);
-                } else {
-                    toggle_play(st)
-                }
-            },
-            Cover { src: art, class: "stage-pill-art", loading: "eager" }
-            span { class: "stage-pill-title ellipsis", "{t.title}" }
-            if playing {
-                PlayingBars {}
-            } else {
-                Icon { name: "play", size: 14 }
-            }
-        }
-    }
-}
-
 #[component]
 pub fn StageTop() -> Element {
     let st = app_state();
@@ -119,22 +75,14 @@ pub fn StageTop() -> Element {
             },
             ondoubleclick: move |_| toggle_maximized_quiet(),
             div { class: "stage-side", BrandClock {} }
-            div { class: "stage-center", NowPill {} }
+            div { class: "stage-center", ModeSwitch {} }
             div { class: "stage-side end",
-                div { class: "stage-switch", onmousedown: move |e| e.stop_propagation(),
-                    button { class: "stage-switch-btn", title: "Вернуться в медиатеку (Esc)", onclick: move |_| close_stage(st), "Медиатека" }
-                    button { class: "stage-switch-btn active", "Сцена" }
-                }
                 IconBtn { icon: "search", title: "Найти текст вручную", size: 17, onclick: move |_| { let mut m = st.modal; m.set(Some(Modal::LyricsSearch)); } }
                 IconBtn {
                     icon: "fullscreen",
                     title: "Во весь экран (F11)",
                     size: 17,
-                    onclick: move |_| {
-                        let w = window();
-                        let v = w.fullscreen().is_none();
-                        w.set_fullscreen(v);
-                    },
+                    onclick: move |_| super::chrome::toggle_fullscreen_animated(st),
                 }
                 span { class: "stage-sep" }
                 div { class: "win-btns", onmousedown: move |e| e.stop_propagation(),
@@ -152,39 +100,168 @@ pub fn StageTop() -> Element {
 pub fn StageCover() -> Element {
     let st = app_state();
     let art = st.now.read().as_ref().and_then(|t| t.art(ArtSize::Large));
-    let lv = if st.settings.read().beat_glow { (*st.level.read() * 3.2).min(1.0) } else { 0.0 };
+    let (beat_glow, custom_path, last_path) = {
+        let s = st.settings.read();
+        // старые настройки: фон стоял, а «последнего» ещё не запоминали
+        let last = s.stage_cover_bg_last.clone().or_else(|| s.stage_cover_bg.clone());
+        (s.beat_glow, s.stage_cover_bg.clone(), last)
+    };
+    let custom_url = custom_path.as_deref().map(file_url);
+    let has_custom = custom_url.is_some();
+    // ранее выбранный фон, которым можно снова заменить пластинку
+    let last_url = if has_custom { None } else { last_path.as_deref().filter(|p| std::path::Path::new(p).exists()).map(file_url) };
+    let lv = if beat_glow { (*st.level.read() * 3.2).min(1.0) } else { 0.0 };
     let playing = matches!(*st.pstate.read(), PlaybackState::Playing | PlaybackState::Buffering);
     rsx! {
-        div { class: if playing { "stage-card stage-cover playing" } else { "stage-card stage-cover" }, style: "--beat: {lv:.2};",
-            // фон карточки — та же обложка, сильно размытая
-            if let Some(a) = art.clone() {
-                div { class: "stage-cover-bg", style: "background-image: url('{a}');" }
+        div {
+            class: match (playing, has_custom) {
+                (true, true) => "stage-card stage-cover playing has-custom-bg",
+                (false, true) => "stage-card stage-cover has-custom-bg",
+                (true, false) => "stage-card stage-cover playing",
+                (false, false) => "stage-card stage-cover",
+            },
+            style: "--beat: {lv:.2};",
+            if let Some(bg) = custom_url {
+                img {
+                    class: "stage-cover-custom",
+                    src: "{bg}",
+                    alt: "",
+                    draggable: "false",
+                }
+            } else {
+                // фон карточки — та же обложка, сильно размытая
+                if let Some(a) = art.clone() {
+                    div { class: "stage-cover-bg", style: "background-image: url('{a}');" }
+                }
+                // обложка — конверт, из него выезжает пластинка и крутится, пока играет музыка
+                // тонарм: опускается на пластинку, когда музыка играет
+                StageArm {}
+                div { class: "stage-sleeve",
+                    div { class: "stage-vinyl",
+                        div { class: "stage-vinyl-label",
+                            style: if let Some(a) = art.clone() { format!("background-image: url('{a}');") } else { String::new() },
+                        }
+                    }
+                    Cover { src: art.clone(), loading: "eager" }
+                }
             }
-            // обложка — конверт, из него выезжает пластинка и крутится, пока играет музыка
-            // тонарм: опускается на пластинку, когда музыка играет
-            svg { class: "stage-arm", view_box: "0 0 60 200", "aria-hidden": "true",
-                circle { cx: "30", cy: "22", r: "16", class: "arm-base" }
-                circle { cx: "30", cy: "22", r: "6", class: "arm-pivot" }
-                path { d: "M30 22 L30 150 L18 176", class: "arm-rod" }
-                rect { x: "8", y: "170", width: "18", height: "26", rx: "4", class: "arm-head", transform: "rotate(-24 17 183)" }
-            }
-            div { class: "stage-sleeve",
-                div { class: "stage-vinyl",
-                    div { class: "stage-vinyl-label",
-                        style: if let Some(a) = art.clone() { format!("background-image: url('{a}');") } else { String::new() },
+            // при наведении: на пластинке — поставить прошлый фон (превью) или выбрать
+            // новый; на своём фоне — вернуть пластинку или выбрать другой
+            div { class: "stage-cover-actions",
+                if has_custom {
+                    button { class: "stage-cover-bg-btn", title: "Вернуть виниловую пластинку",
+                        onclick: move |_| upd(st, |s| {
+                            if s.stage_cover_bg.is_some() {
+                                s.stage_cover_bg_last = s.stage_cover_bg.take();
+                            }
+                        }),
+                        Icon { name: "album", size: 17 }
+                    }
+                } else if let Some(u) = last_url.clone() {
+                    button { class: "stage-cover-bg-btn stage-cover-last", title: "Поставить прошлый фон",
+                        onclick: move |_| upd(st, |s| s.stage_cover_bg = s.stage_cover_bg_last.clone().or_else(|| s.stage_cover_bg.clone())),
+                        img { src: "{u}", alt: "", draggable: "false" }
                     }
                 }
-                Cover { src: art.clone(), loading: "eager" }
+                button {
+                    class: "stage-cover-bg-btn",
+                    title: if has_custom { "Выбрать другое фото или GIF" } else if last_url.is_some() { "Выбрать новое фото или GIF" } else { "Поменять фон (фото или GIF)" },
+                    onclick: move |_| pick_cover_bg(st),
+                    Icon { name: if has_custom || last_url.is_some() { "add_photo" } else { "image" }, size: 16 }
+                }
             }
-            button {
-                class: "stage-cover-btn",
-                title: "Во весь экран (F11)",
-                onclick: move |_| {
-                    let w = window();
-                    let v = w.fullscreen().is_none();
-                    w.set_fullscreen(v);
-                },
-                Icon { name: "fullscreen", size: 16 }
+        }
+    }
+}
+
+/// Выбрать своё фото или GIF вместо пластинки — запоминается как «последний фон».
+fn pick_cover_bg(st: AppState) {
+    spawn(async move {
+        let picked = rfd::AsyncFileDialog::new()
+            .set_title("Выберите изображение или GIF")
+            .add_filter(
+                "Изображения и GIF",
+                &["png", "jpg", "jpeg", "jfif", "pjpeg", "pjp", "gif", "webp", "avif", "apng", "bmp", "ico", "tif", "tiff", "heic", "heif", "svg"],
+            )
+            .add_filter("Все файлы", &["*"])
+            .pick_file()
+            .await;
+        if let Some(h) = picked {
+            let p = h.path().to_string_lossy().into_owned();
+            upd(st, |s| {
+                s.stage_cover_bg = Some(p.clone());
+                s.stage_cover_bg_last = Some(p);
+            });
+        }
+    });
+}
+
+/// Тонарм проигрывателя: основание с подшипником, противовес, металлическая
+/// трубка, головка с картриджем, иглой и подъёмником. Металл — градиенты,
+/// блики и тени, чтобы не выглядел плоским.
+#[component]
+fn StageArm() -> Element {
+    rsx! {
+        svg { class: "stage-arm", view_box: "0 0 60 200", "aria-hidden": "true",
+            defs {
+                radialGradient { id: "arm-plate", cx: "40%", cy: "35%", r: "70%",
+                    stop { offset: "0", stop_color: "#3a3a3d" }
+                    stop { offset: "0.7", stop_color: "#1b1b1d" }
+                    stop { offset: "1", stop_color: "#0e0e10" }
+                }
+                radialGradient { id: "arm-cap", cx: "38%", cy: "32%", r: "75%",
+                    stop { offset: "0", stop_color: "#ffffff" }
+                    stop { offset: "0.45", stop_color: "#c9c9cc" }
+                    stop { offset: "1", stop_color: "#6c6c70" }
+                }
+                linearGradient { id: "arm-tube", x1: "0", y1: "0", x2: "1", y2: "0",
+                    stop { offset: "0", stop_color: "#7d7d82" }
+                    stop { offset: "0.35", stop_color: "#f4f4f6" }
+                    stop { offset: "0.6", stop_color: "#bdbdc2" }
+                    stop { offset: "1", stop_color: "#5d5d62" }
+                }
+                linearGradient { id: "arm-weight", x1: "0", y1: "0", x2: "1", y2: "0",
+                    stop { offset: "0", stop_color: "#2a2a2d" }
+                    stop { offset: "0.4", stop_color: "#5a5a5f" }
+                    stop { offset: "0.55", stop_color: "#3a3a3e" }
+                    stop { offset: "1", stop_color: "#151517" }
+                }
+                linearGradient { id: "arm-shell", x1: "0", y1: "0", x2: "1", y2: "1",
+                    stop { offset: "0", stop_color: "#3b3b3f" }
+                    stop { offset: "1", stop_color: "#141416" }
+                }
+            }
+            // основание: плита с кольцом и винтами
+            circle { cx: "30", cy: "22", r: "18", fill: "url(#arm-plate)", class: "arm-base" }
+            circle { cx: "30", cy: "22", r: "13.5", fill: "none", stroke: "rgba(255,255,255,.09)", stroke_width: "1" }
+            for (x, y) in [(17.5f32, 12.0f32), (42.5, 12.0), (17.5, 32.0), (42.5, 32.0)] {
+                circle { key: "{x}-{y}", cx: "{x}", cy: "{y}", r: "1.1", fill: "#77777c" }
+            }
+            // противовес над шарниром (рифлёный цилиндр)
+            rect { x: "23", y: "2", width: "14", height: "11", rx: "2.5", fill: "url(#arm-weight)", stroke: "rgba(0,0,0,.5)", stroke_width: ".6" }
+            for k in 0..4 {
+                line { key: "{k}", x1: "{25.5 + k as f32 * 3.0}", y1: "3.2", x2: "{25.5 + k as f32 * 3.0}", y2: "11.8", stroke: "rgba(255,255,255,.12)", stroke_width: ".6" }
+            }
+            rect { x: "28.6", y: "11", width: "2.8", height: "6", fill: "url(#arm-tube)" }
+            // трубка: мягкий изгиб к головке, с бликом вдоль
+            path { d: "M30 22 L30 132 Q30 146 22.5 160", fill: "none", stroke: "rgba(0,0,0,.45)", stroke_width: "6.2", stroke_linecap: "round", class: "arm-rod-shadow" }
+            path { d: "M30 22 L30 132 Q30 146 22.5 160", fill: "none", stroke: "url(#arm-tube)", stroke_width: "4.6", stroke_linecap: "round", class: "arm-rod" }
+            path { d: "M29.2 26 L29.2 131", fill: "none", stroke: "rgba(255,255,255,.75)", stroke_width: ".8", stroke_linecap: "round" }
+            // шарнир (подшипник) поверх трубки
+            circle { cx: "30", cy: "22", r: "7.5", fill: "#0f0f11", stroke: "rgba(255,255,255,.18)", stroke_width: ".8" }
+            circle { cx: "30", cy: "22", r: "5.2", fill: "url(#arm-cap)", class: "arm-pivot" }
+            circle { cx: "28.4", cy: "20.4", r: "1.4", fill: "rgba(255,255,255,.85)" }
+            // головка: корпус, подъёмник, картридж с акцентной вставкой и игла
+            g { transform: "rotate(-26 21 172)",
+                rect { x: "18.6", y: "157", width: "6", height: "5", rx: "1.2", fill: "#9c9ca1" }
+                rect { x: "11", y: "161", width: "20", height: "24", rx: "3.5", fill: "url(#arm-shell)", stroke: "rgba(255,255,255,.16)", stroke_width: ".8", class: "arm-head" }
+                path { d: "M31 166 q7 -1 8 -7", fill: "none", stroke: "#bdbdc2", stroke_width: "1.6", stroke_linecap: "round" }
+                rect { x: "13.5", y: "170", width: "15", height: "12", rx: "1.8", fill: "#0b0b0c" }
+                rect { x: "13.5", y: "170", width: "15", height: "2.4", rx: "1", class: "arm-accent" }
+                line { x1: "15.5", y1: "175", x2: "26.5", y2: "175", stroke: "rgba(255,255,255,.08)", stroke_width: ".6" }
+                line { x1: "15.5", y1: "178", x2: "26.5", y2: "178", stroke: "rgba(255,255,255,.08)", stroke_width: ".6" }
+                path { d: "M21 182 L21 187.5", stroke: "#d8d8dc", stroke_width: ".9", stroke_linecap: "round" }
+                circle { cx: "21", cy: "188", r: ".9", fill: "#fff" }
             }
         }
     }
@@ -257,9 +334,16 @@ fn StageWave() -> Element {
             })
             .collect::<Vec<f32>>()
     }));
+    let pstate = *st.pstate.read();
+    let playing_u8 = u8::from(pstate == PlaybackState::Playing);
     rsx! {
         div { class: "stage-wave-wrap", "data-el": "progress",
-            div { class: "stage-wave", style: "--pp: {pct}%;",
+            div {
+                class: "stage-wave",
+                style: "--pp: {pct}%;",
+                "data-pos": "{pos}",
+                "data-dur": "{dur}",
+                "data-play": "{playing_u8}",
                 // тусклые столбики и поверх — светлые, открытые до позиции:
                 // заливка ползёт плавно, а не перескакивает по столбику
                 div { class: "sw-bars base",
@@ -416,14 +500,43 @@ pub fn StageClock() -> Element {
 }
 
 const VIZ_JS: &str = r#"
+const cur = new Float32Array(48);
+const tgt = new Float32Array(48);
+let active = false, last = 0;
+function tick(now) {
+  const dt = last ? Math.min(0.05, Math.max(0.001, (now - last) / 1000)) : 1 / 60;
+  last = now;
+  const k = 1 - Math.pow(0.42, dt * 60);
+  const bars = document.querySelectorAll(".stage-viz i");
+  let energy = 0;
+  for (let i = 0; i < bars.length; i++) {
+    const t = tgt[i % 24] || 0;
+    const c = cur[i] + (t - cur[i]) * k;
+    cur[i] = c;
+    energy += Math.abs(c) + Math.abs(t);
+    bars[i].style.setProperty("--h", c.toFixed(3));
+  }
+  if (energy > 0.002) {
+    requestAnimationFrame(tick);
+  } else {
+    active = false;
+    last = 0;
+  }
+}
 while (true) {
   const v = await dioxus.recv();
-  const bars = document.querySelectorAll(".stage-viz i");
-  for (let i = 0; i < bars.length; i++) bars[i].style.setProperty("--h", (v[i % v.length] || 0).toFixed(3));
+  const n = Math.max(1, v.length);
+  for (let i = 0; i < 24; i++) tgt[i] = v[i % n] || 0;
+  if (!active) {
+    active = true;
+    last = 0;
+    requestAnimationFrame(tick);
+  }
 }
 "#;
 
-/// Столбики спектра (тот же анализатор, что и у визуализатора на главной).
+/// Столбики спектра (тот же анализатор, что и у визуализатора на главной),
+/// подстроенные под частоту обновления монитора.
 #[component]
 fn StageViz() -> Element {
     use std::sync::atomic::Ordering;
@@ -440,7 +553,7 @@ fn StageViz() -> Element {
         let ev = document::eval(VIZ_JS);
         let mut quiet = 0u32;
         loop {
-            tokio::time::sleep(Duration::from_millis(33)).await;
+            tokio::time::sleep(super::display::frame_interval(super::display::app_hz(), super::display::low_power())).await;
             let v = svc().player.spectrum();
             if v.iter().all(|x| *x < 0.004) {
                 quiet += 1;

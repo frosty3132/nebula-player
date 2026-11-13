@@ -6,6 +6,7 @@ mod actions;
 mod background;
 mod chrome;
 mod desk_island;
+pub mod display;
 mod download;
 mod island_sys;
 mod icons;
@@ -298,6 +299,46 @@ document.addEventListener("focusin", (e) => {
     el.setAttribute("autocomplete", "off");
   }
 }, true);
+// Интерполяция полос прогресса с реальной частотой монитора (60/120/144/240 Гц)
+// без лишних перерисовок VDOM.
+const syncProgState = new WeakMap();
+const driveProgress = () => {
+  const app = document.querySelector(".app");
+  if (!app || app.classList.contains("low-power") || !app.classList.contains("is-playing")) {
+    progRaf = 0;
+    return;
+  }
+  const now = performance.now();
+  for (const el of document.querySelectorAll("[data-pos][data-dur][data-play]")) {
+    if (el.classList.contains("dragging")) continue;
+    const rawPos = Number(el.dataset.pos) || 0;
+    const dur = Number(el.dataset.dur) || 0;
+    const play = el.dataset.play === "1";
+    let st = syncProgState.get(el);
+    if (!st || st.rawPos !== rawPos || st.dur !== dur || st.play !== play) {
+      st = { rawPos, dur, play, ts: now };
+      syncProgState.set(el, st);
+    }
+    if (!play || dur <= 0) continue;
+    const cur = Math.min(dur, st.rawPos + Math.max(0, now - st.ts));
+    const pct = (cur / dur * 100).toFixed(4) + "%";
+    el.style.setProperty("--pp", pct);
+    const fill = el.querySelector(".pr-fill");
+    if (fill) fill.style.width = pct;
+  }
+  progRaf = requestAnimationFrame(driveProgress);
+};
+let progRaf = 0;
+const ensureProgLoop = () => {
+  const app = document.querySelector(".app");
+  if (!progRaf && app && !app.classList.contains("low-power") && app.classList.contains("is-playing")) {
+    progRaf = requestAnimationFrame(driveProgress);
+  }
+};
+new MutationObserver(ensureProgLoop).observe(document.documentElement, {
+  subtree: true, attributes: true, attributeFilter: ["class", "data-pos", "data-play"]
+});
+ensureProgLoop();
 await new Promise(() => {});
 "#;
 
@@ -346,9 +387,8 @@ fn handle_key(st: AppState, m: JsMsg) {
             document::eval("setTimeout(() => document.getElementById('search-input')?.focus(), 60);");
         }
         ("KeyF", false) => {
-            let mut f = st.fullscreen;
-            let v = !*f.peek();
-            f.set(v);
+            let open = !*st.fullscreen.peek();
+            chrome::set_app_mode(st, open);
         }
         ("KeyE", true) => {
             let mut e = st.edit_mode;
@@ -361,12 +401,10 @@ fn handle_key(st: AppState, m: JsMsg) {
         }
         ("Comma", true) => navigate(st, Route::Settings(SettingsTab::Sound)),
         ("F11", _) => {
-            let w = window();
-            let fs = w.fullscreen().is_some();
-            w.set_fullscreen(!fs);
+            chrome::toggle_fullscreen_animated(st);
         }
         ("Escape", _) => {
-            let (mut menu, mut modal, mut sel, mut edit, mut fs, eq) = (st.menu, st.modal, st.selected_el, st.edit_mode, st.fullscreen, st.eq_open);
+            let (mut menu, mut modal, mut sel, mut edit, fs, eq) = (st.menu, st.modal, st.selected_el, st.edit_mode, st.fullscreen, st.eq_open);
             if menu.peek().is_some() {
                 menu.set(None);
             } else if modal.peek().is_some() {
@@ -378,10 +416,7 @@ fn handle_key(st: AppState, m: JsMsg) {
             } else if *eq.peek() {
                 player_bar::set_eq_open(st, false);
             } else if *fs.peek() {
-                if window().fullscreen().is_some() {
-                    window().set_fullscreen(false);
-                }
-                fs.set(false);
+                chrome::set_app_mode(st, false);
             } else if window().fullscreen().is_some() {
                 window().set_fullscreen(false);
             }
@@ -397,21 +432,12 @@ fn handle_key(st: AppState, m: JsMsg) {
         ("__hidden", _) => {
             let mut h = st.hidden;
             h.set(true);
-            // свёрнуто (кнопкой или через панель задач): возвращение из панели
-            // задач пусть идёт системной анимацией, как у обычных приложений
-            chrome::set_window_transitions(true);
+            chrome::set_window_transitions(false);
         }
         ("__visible", _) => {
             let mut h = st.hidden;
             h.set(false);
-            // окно вернулось — после системной анимации снова выключаем её,
-            // чтобы развёртывание не вспыхивало белым
-            spawn(async move {
-                tokio::time::sleep(Duration::from_millis(700)).await;
-                if !*st.hidden.peek() {
-                    chrome::set_window_transitions(false);
-                }
-            });
+            chrome::set_window_transitions(false);
         }
         ("__select", _) => {
             if let Some(id) = m.v {
@@ -521,6 +547,8 @@ pub fn App() -> Element {
         let theme = themes.iter().find(|t| t.id == settings.theme).cloned().unwrap_or_else(|| themes[0].clone());
         let local = LocalIndex::load().tracks();
         let intro = if intro_enabled(&settings) { 1 } else { 0 };
+        display::set_low_power(settings.low_power);
+        let init_hz = display::sync_app_hz(&window().window);
         AppState {
             intro: Signal::new(intro),
             player_switching: Signal::new(false),
@@ -547,6 +575,7 @@ pub fn App() -> Element {
             lyrics: Signal::new(LyricsState::Idle),
             lyrics_offset: Signal::new(0),
             fullscreen: Signal::new(false),
+            refresh_hz: Signal::new(init_hz),
             eq_open: Signal::new(false),
             edit_mode: Signal::new(false),
             selected_el: Signal::new(None),
@@ -622,12 +651,15 @@ pub fn App() -> Element {
             }
             match event {
                 WindowEvent::Resized(_) => {
-                    let m = window().is_maximized();
+                    let hz = display::sync_app_hz(&window().window);
+                    if *st.refresh_hz.peek() != hz {
+                        let mut rhz = st.refresh_hz;
+                        rhz.set(hz);
+                    }
+                    // полный экран (F11) — тоже «развёрнуто»: без скруглённых углов и с той же анимацией
+                    let m = { let w = window(); w.is_maximized() || w.fullscreen().is_some() };
                     if *maximized.peek() != m {
                         maximized.set(m);
-                        // своя плавная анимация развёртывания/восстановления (системная
-                        // выключена — она мигала белым): кнопка, двойной щелчок,
-                        // Win+↑ и перетаскивание к краю — всё проходит здесь
                         let (anim, k) = {
                             let s = st.settings.peek();
                             (s.animations && !s.low_power, s.anim_speed.clamp(0.05, 3.0))
@@ -638,12 +670,19 @@ pub fn App() -> Element {
                             win_anim.set(if m { "win-grow" } else { "win-shrink" });
                             let gen = win_anim_gen.clone();
                             spawn(async move {
-                                tokio::time::sleep(Duration::from_millis((420.0 * k) as u64 + 40)).await;
+                                tokio::time::sleep(Duration::from_millis((500.0 * k) as u64 + 40)).await;
                                 if gen.get() == g {
                                     win_anim.set("");
                                 }
                             });
                         }
+                    }
+                }
+                WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. } | WindowEvent::Focused(true) => {
+                    let hz = display::sync_app_hz(&window().window);
+                    if *st.refresh_hz.peek() != hz {
+                        let mut rhz = st.refresh_hz;
+                        rhz.set(hz);
                     }
                 }
                 WindowEvent::CloseRequested => {
@@ -910,7 +949,6 @@ pub fn App() -> Element {
                     muted,
                     accent: st.accent.peek().clone(),
                     next,
-                    weather_city: st.settings.peek().weather_city.clone(),
                     queue_left: {
                         let q = st.queue.peek();
                         q.index.map(|i| q.tracks.len().saturating_sub(i + 1)).unwrap_or(0)
@@ -1136,6 +1174,9 @@ pub fn App() -> Element {
     let s = st.settings.read();
     let pstate = *st.pstate.read();
     let intro = *st.intro.read();
+    let hz = *st.refresh_hz.read();
+    let frame_ms = 1000.0 / hz.max(30) as f64;
+    display::set_low_power(s.low_power);
     let page_anim = (s.animations && !s.low_power, s.anim_speed);
     let class = [
         "app",
@@ -1201,7 +1242,7 @@ pub fn App() -> Element {
     rsx! {
         document::Title { "Nebula" }
         style { "{css}" }
-        div { class: "{class}", "data-el": "window",
+        div { class: "{class}", "data-el": "window", style: "--hz: {hz}; --frame-ms: {frame_ms:.3}ms;",
             Background {}
             div { class: "frame",
                 TitleBar {}

@@ -355,6 +355,7 @@ pub struct AppState {
     pub lyrics: Signal<LyricsState>,
     pub lyrics_offset: Signal<i32>,
     pub fullscreen: Signal<bool>,
+    pub refresh_hz: Signal<u32>,
     pub eq_open: Signal<bool>,
     pub edit_mode: Signal<bool>,
     pub selected_el: Signal<Option<String>>,
