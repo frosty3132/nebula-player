@@ -17,6 +17,15 @@ pub struct LocalPlaylist {
     pub name: String,
     pub tracks: Vec<Track>,
     pub created: u64,
+    /// Связанный плейлист SoundCloud (urn) — изменения синхронизируются в обе стороны.
+    pub sc_urn: Option<String>,
+    /// Снимок на момент последней синхронизации: id треков SoundCloud, название и
+    /// `last_modified` плейлиста там. По нему видно, кто что поменял с тех пор.
+    pub sc_base: Vec<String>,
+    pub sc_base_title: String,
+    pub sc_modified: Option<String>,
+    /// Не выкладывать в SoundCloud (плейлист отвязали).
+    pub sc_off: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
@@ -64,6 +73,10 @@ pub struct LibraryData {
     pub listening: ListeningStats,
     /// Статистика по аккаунтам SoundCloud (ключ — urn пользователя).
     pub listening_accounts: HashMap<String, ListeningStats>,
+    /// Плейлисты SoundCloud, которые отвязали, — заново не подтягиваем.
+    pub sc_ignored: Vec<String>,
+    /// Аккаунт SoundCloud, с которым связаны плейлисты (при входе в другой — связи сбрасываются).
+    pub sc_sync_account: Option<String>,
 }
 
 const HISTORY_MAX: usize = 300;
@@ -158,7 +171,7 @@ impl LibraryData {
 
     pub fn create_playlist(&mut self, name: &str) -> String {
         let id = format!("local-{}-{}", now_secs(), self.playlists.len());
-        self.playlists.push(LocalPlaylist { id: id.clone(), name: name.trim().to_string(), tracks: Vec::new(), created: now_secs() });
+        self.playlists.push(LocalPlaylist { id: id.clone(), name: name.trim().to_string(), created: now_secs(), ..Default::default() });
         id
     }
 

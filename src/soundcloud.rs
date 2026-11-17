@@ -269,6 +269,7 @@ pub fn playlist_from(v: &Value) -> Option<PlaylistInfo> {
         user: user.and_then(|u| s(u, "username")).unwrap_or_default(),
         user_urn: user.and_then(|u| urn_of(u, "users")),
         permalink: s(v, "permalink_url"),
+        modified: s(v, "last_modified"),
     })
 }
 
@@ -605,6 +606,143 @@ impl SoundCloud {
         let url = s(&r, "url").ok_or("SoundCloud не вернул ссылку на поток")?;
         let spec = if pick.hls { MediaSpec::Hls { url, auth: None } } else { MediaSpec::Http { url, auth: None } };
         Ok((spec, pick.preview))
+    }
+
+    // ───────────── свои плейлисты: полный список и изменение (синхронизация) ─────────────
+
+    /// Все свои плейлисты (все страницы).
+    pub async fn my_playlists_all(&self) -> Result<Vec<PlaylistInfo>, String> {
+        let mut page = self.my_playlists().await?;
+        let mut out = std::mem::take(&mut page.items);
+        let mut guard = 0;
+        while let Some(next) = page.next.take() {
+            guard += 1;
+            if guard > 20 {
+                break;
+            }
+            page = self.next_playlists(&next).await?;
+            out.append(&mut page.items);
+        }
+        Ok(out)
+    }
+
+    /// Все треки плейлиста по порядку (официальный API отдаёт их страницами).
+    pub async fn playlist_tracks_all(&self, urn: &str) -> Result<Vec<Track>, String> {
+        let mut page = self.playlist_tracks(urn).await?;
+        let mut out = std::mem::take(&mut page.items);
+        let mut guard = 0;
+        while let Some(next) = page.next.take() {
+            guard += 1;
+            if guard > 50 {
+                break;
+            }
+            page = self.next_tracks(&next).await?;
+            out.append(&mut page.items);
+        }
+        Ok(out)
+    }
+
+    /// Тело запроса с плейлистом: API сайта ждёт числовые id треков, официальный — urn.
+    fn playlist_body(&self, title: Option<&str>, track_urns: &[String], sharing: Option<&str>) -> Value {
+        let tracks: Vec<Value> = if self.use_v2() {
+            track_urns.iter().filter_map(|u| sc_id(u).parse::<u64>().ok()).map(Value::from).collect()
+        } else {
+            track_urns
+                .iter()
+                .map(|u| match sc_id(u).parse::<u64>() {
+                    Ok(n) => serde_json::json!({ "urn": u, "id": n }),
+                    Err(_) => serde_json::json!({ "urn": u }),
+                })
+                .collect()
+        };
+        let mut p = serde_json::Map::new();
+        if let Some(t) = title {
+            p.insert("title".into(), Value::from(t));
+        }
+        if let Some(s) = sharing {
+            p.insert("sharing".into(), Value::from(s));
+        }
+        p.insert("tracks".into(), Value::Array(tracks));
+        serde_json::json!({ "playlist": Value::Object(p) })
+    }
+
+    /// Запрос на изменение (POST/PUT/DELETE) к тому API, через которое вошли.
+    async fn send_write(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value, String> {
+        self.need_login()?;
+        if self.use_v2() {
+            let (token, client_id) = self.web().ok_or("Войдите в SoundCloud")?;
+            let url = v2_url(path, &[], &client_id)?;
+            let mut req = self.http.request(method, url).header(AUTHORIZATION, format!("OAuth {token}")).header(ACCEPT, "application/json; charset=utf-8");
+            if let Some(b) = body {
+                req = req.json(&b);
+            }
+            let resp = req.send().await.map_err(|e| format!("сеть: {e}"))?;
+            return match resp.status().as_u16() {
+                401 => {
+                    self.expire_web(&token);
+                    Err("Сессия SoundCloud устарела — войдите снова".into())
+                }
+                204 => Ok(Value::Null),
+                s => Self::v2_result(s, resp).await,
+            };
+        }
+        for attempt in 0..2 {
+            let token = self.token().await?;
+            let mut req = self
+                .http
+                .request(method.clone(), format!("{API}{path}"))
+                .header(AUTHORIZATION, format!("OAuth {token}"))
+                .header(ACCEPT, "application/json; charset=utf-8");
+            if let Some(b) = &body {
+                req = req.json(b);
+            }
+            let resp = req.send().await.map_err(|e| format!("сеть: {e}"))?;
+            let status = resp.status().as_u16();
+            if status == 401 && attempt == 0 {
+                self.invalidate(&token);
+                continue;
+            }
+            if status == 204 {
+                return Ok(Value::Null);
+            }
+            if (200..300).contains(&status) {
+                // DELETE иногда отвечает пустым телом
+                return Ok(resp.json().await.unwrap_or(Value::Null));
+            }
+            return Err(match status {
+                403 => "SoundCloud: нет прав менять этот плейлист".into(),
+                404 => "SoundCloud: не найдено".into(),
+                429 => "SoundCloud: слишком много запросов, подождите немного".into(),
+                s => format!("SoundCloud: HTTP {s}"),
+            });
+        }
+        Err("SoundCloud: требуется повторная авторизация".into())
+    }
+
+    fn playlist_path(&self, urn: &str) -> String {
+        if self.use_v2() {
+            format!("/playlists/{}", sc_id(urn))
+        } else {
+            format!("/playlists/{urn}")
+        }
+    }
+
+    /// Создать свой плейлист (закрытый — его видите только вы).
+    pub async fn create_playlist(&self, title: &str, track_urns: &[String]) -> Result<PlaylistInfo, String> {
+        let body = self.playlist_body(Some(title), track_urns, Some("private"));
+        let v = self.send_write(reqwest::Method::POST, "/playlists", Some(body)).await?;
+        playlist_from(&v).ok_or_else(|| "SoundCloud не вернул созданный плейлист".into())
+    }
+
+    /// Заменить название и/или треки своего плейлиста. Возвращает обновлённый плейлист.
+    pub async fn update_playlist(&self, urn: &str, title: Option<&str>, track_urns: &[String]) -> Result<Option<PlaylistInfo>, String> {
+        let body = self.playlist_body(title, track_urns, None);
+        let v = self.send_write(reqwest::Method::PUT, &self.playlist_path(urn), Some(body)).await?;
+        Ok(playlist_from(&v))
+    }
+
+    pub async fn delete_playlist(&self, urn: &str) -> Result<(), String> {
+        self.send_write(reqwest::Method::DELETE, &self.playlist_path(urn), None).await.map(|_| ())
     }
 
     pub fn user(&self) -> Option<UserInfo> {

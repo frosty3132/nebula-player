@@ -2782,3 +2782,51 @@ button.stage-tag:hover { color: var(--text); border-color: rgba(var(--text-rgb),
 .stage-cover .stage-cover-actions:hover {
   opacity: 1; transform: none; visibility: visible;
   transition: opacity 200ms ease, transform 300ms cubic-bezier(.2, .9, .25, 1.3), visibility 0s; }
+
+/* ── обновление: плашка справа сверху ── */
+.upd-banner { position: fixed; top: 58px; right: 18px; z-index: 170; width: 340px; box-sizing: border-box; padding: 14px 14px 12px;
+  border-radius: 18px; background: rgba(var(--surface2-rgb), .94); backdrop-filter: blur(20px); border: 1px solid var(--border);
+  box-shadow: 0 18px 48px -12px rgba(0, 0, 0, .6); animation: upd-in 520ms cubic-bezier(.2, .9, .25, 1.15) both; }
+@keyframes upd-in { from { opacity: 0; transform: translateY(-14px) scale(.96); filter: blur(4px); } }
+.upd-head { display: flex; align-items: flex-start; gap: 11px; }
+.upd-ico { width: 36px; height: 36px; border-radius: 12px; flex: 0 0 auto; display: grid; place-items: center; color: var(--on-accent); background: var(--accent-grad); box-shadow: var(--glow-shadow); }
+.upd-ico.spin .icon { animation: upd-spin 1.1s linear infinite; }
+@keyframes upd-spin { to { rotate: 360deg; } }
+.upd-ico.ok { background: #2fbf71; color: #fff; box-shadow: none; }
+.upd-ico.err { background: rgba(255, 90, 70, .2); color: #ff8a7a; box-shadow: none; }
+.upd-meta { flex: 1; min-width: 0; }
+.upd-title { font-weight: 750; font-size: 14px; }
+.upd-sub { margin-top: 2px; font-size: 12px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.upd-sub.wrap { white-space: normal; }
+.upd-x { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; color: var(--text-dim); flex: 0 0 auto; transition: background var(--t-fast), color var(--t-fast); }
+.upd-x:hover { background: rgba(255, 255, 255, .08); color: var(--text); }
+.upd-notes-btn { margin-top: 10px; display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 650; color: var(--text-dim); }
+.upd-notes-btn:hover { color: var(--text); }
+.upd-notes { margin-top: 6px; max-height: 160px; overflow: auto; padding: 8px 10px; border-radius: 10px; background: rgba(0, 0, 0, .18); font-size: 12px; line-height: 1.45; color: var(--text-dim); animation: upd-in 320ms ease both; }
+.upd-note.h { color: var(--text); font-weight: 700; margin-top: 4px; }
+.upd-actions { margin-top: 12px; display: flex; justify-content: flex-end; gap: 8px; }
+.upd-later, .upd-go { height: 34px; padding: 0 14px; border-radius: 11px; display: inline-flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 700; transition: filter var(--t-fast), background var(--t-fast), transform 200ms; }
+.upd-later { background: rgba(255, 255, 255, .07); color: var(--text); }
+.upd-later:hover { background: rgba(255, 255, 255, .13); }
+.upd-go { background: var(--accent-grad); color: var(--on-accent); box-shadow: var(--glow-shadow); }
+.upd-go:hover { filter: brightness(1.1); }
+.upd-go:active, .upd-later:active { transform: scale(.96); }
+.upd-bar { margin-top: 12px; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, .08); overflow: hidden; }
+.upd-fill { height: 100%; border-radius: inherit; background: var(--accent-grad); transition: width 240ms ease; }
+.app.light .upd-banner { background: rgba(255, 255, 255, .95); }
+.app.no-anim .upd-banner, .app.no-anim .upd-notes { animation: none; }
+
+/* ── синхронизация плейлистов с SoundCloud ── */
+.sync-chip { height: 34px; padding: 0 13px; border-radius: 17px; display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 650;
+  background: rgba(255, 255, 255, .06); border: 1px solid var(--border); color: var(--text-dim); transition: background var(--t-fast), color var(--t-fast); }
+.sync-chip:hover { background: rgba(255, 255, 255, .11); color: var(--text); }
+.sync-chip.ok .icon { color: #49c98a; }
+.sync-chip.err { color: #ff9a8a; border-color: rgba(255, 110, 90, .35); }
+.sync-chip.run .icon { animation: upd-spin 1s linear infinite; }
+.pl-sc-badge { position: absolute; right: 8px; top: 8px; z-index: 2; width: 24px; height: 24px; border-radius: 8px; display: grid; place-items: center;
+  background: rgba(0, 0, 0, .55); backdrop-filter: blur(8px); color: #fff; box-shadow: 0 2px 8px rgba(0, 0, 0, .35); }
+.pl-sync-row { margin: 4px 0 14px; display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 14px;
+  background: rgba(255, 255, 255, .04); border: 1px solid var(--border); color: var(--text-dim); font-size: 13px; }
+.pl-sync-row.on > .icon { color: #49c98a; }
+.pl-sync-text { flex: 1; min-width: 0; }
+.btn.sm { height: 30px; padding: 0 11px; font-size: 12.5px; }
