@@ -901,6 +901,7 @@ pub fn Playlists() -> Element {
     let st = app_state();
     let local = st.library.read().playlists.clone();
     let logged = st.sc_user.read().is_some();
+    let sync_on = st.settings.read().sc_playlist_sync;
     rsx! {
         div { class: "page",
             PageHeader { title: "Плейлисты", kicker: "Библиотека",
@@ -912,6 +913,7 @@ pub fn Playlists() -> Element {
                     onclick: move |_| { let mut m = st.modal; m.set(Some(Modal::Import)); },
                     Icon { name: "download", size: 18 } "Импортировать"
                 }
+                super::pl_sync::SyncChip {}
             }
             Section { title: "Мои плейлисты",
                 if local.is_empty() {
@@ -919,12 +921,13 @@ pub fn Playlists() -> Element {
                 } else {
                     div { class: "card-grid",
                         for p in local {
-                            LocalPlaylistCard { key: "{p.id}", id: p.id.clone(), name: p.name.clone(), tracks: p.tracks.iter().take(1).cloned().collect::<Vec<_>>(), count: p.tracks.len() }
+                            LocalPlaylistCard { key: "{p.id}", id: p.id.clone(), name: p.name.clone(), tracks: p.tracks.iter().take(1).cloned().collect::<Vec<_>>(), count: p.tracks.len(), linked: p.sc_urn.is_some() }
                         }
                     }
                 }
             }
-            if logged {
+            // при синхронизации свои плейлисты SoundCloud уже среди «Моих»
+            if logged && !sync_on {
                 Section { title: "Плейлисты SoundCloud", ScMyPlaylists {} }
             }
         }
@@ -932,7 +935,7 @@ pub fn Playlists() -> Element {
 }
 
 #[component]
-fn LocalPlaylistCard(id: String, name: String, tracks: Vec<Track>, count: usize) -> Element {
+fn LocalPlaylistCard(id: String, name: String, tracks: Vec<Track>, count: usize, #[props(default)] linked: bool) -> Element {
     let st = app_state();
     let art = tracks.first().and_then(|t| t.art(ArtSize::Medium));
     rsx! {
@@ -941,6 +944,9 @@ fn LocalPlaylistCard(id: String, name: String, tracks: Vec<Track>, count: usize)
             div { class: "tc-cover stack",
                 Cover { src: art }
                 div { class: "tc-play", Icon { name: "playlist", size: 22 } }
+                if linked {
+                    span { class: "pl-sc-badge", title: "Связан с SoundCloud", Icon { name: "cloud", size: 13 } }
+                }
             }
             div { class: "tc-title ellipsis", "{name}" }
             div { class: "tc-artist", "{count} тр." }
@@ -975,6 +981,11 @@ pub fn LocalPlaylistPage(id: String) -> Element {
     };
     let art = pl.tracks.first().and_then(|t| t.art(ArtSize::Large));
     let (id1, id2, name) = (pl.id.clone(), pl.id.clone(), pl.name.clone());
+    let (id3, id4) = (pl.id.clone(), pl.id.clone());
+    let linked = pl.sc_urn.is_some();
+    let sync_ready = st.settings.read().sc_playlist_sync && st.sc_user.read().is_some();
+    let local_only = pl.tracks.iter().filter(|t| !t.id.starts_with("sc:")).count();
+    let delete_text = if linked { "Плейлист связан с SoundCloud — он удалится и там. Сами треки останутся." } else { "Треки останутся в SoundCloud и на диске." };
     rsx! {
         div { class: "page",
             PageHeader { title: "{pl.name}", kicker: "Плейлист", subtitle: "{pl.tracks.len()} треков", art,
@@ -984,8 +995,25 @@ pub fn LocalPlaylistPage(id: String) -> Element {
                 IconBtn { icon: "delete", title: "Удалить плейлист",
                     onclick: move |_| {
                         let mut m = st.modal;
-                        m.set(Some(Modal::Confirm { title: "Удалить плейлист?".into(), text: "Треки останутся в SoundCloud и на диске.".into(), action: ConfirmAction::DeletePlaylist(id2.clone()) }));
+                        m.set(Some(Modal::Confirm { title: "Удалить плейлист?".into(), text: delete_text.into(), action: ConfirmAction::DeletePlaylist(id2.clone()) }));
                     } }
+            }
+            if sync_ready {
+                div { class: if linked { "pl-sync-row on" } else { "pl-sync-row" },
+                    Icon { name: "cloud", size: 16 }
+                    if linked {
+                        span { class: "pl-sync-text",
+                            "Связан с SoundCloud — изменения переносятся в обе стороны"
+                            if local_only > 0 { " · файлы и YouTube ({local_only}) только в Nebula" }
+                        }
+                        button { class: "btn ghost sm", "data-el": "button", title: "Дальше плейлист живёт только в Nebula, в SoundCloud остаётся как есть",
+                            onclick: move |_| super::pl_sync::unlink(st, &id3), Icon { name: "close", size: 15 } "Отвязать" }
+                    } else {
+                        span { class: "pl-sync-text", "Только в Nebula" }
+                        button { class: "btn ghost sm", "data-el": "button", title: "Выложить в SoundCloud (закрытым) и синхронизировать",
+                            onclick: move |_| super::pl_sync::relink(st, &id4), Icon { name: "refresh", size: 15 } "Связать с SoundCloud" }
+                    }
+                }
             }
             if pl.tracks.is_empty() {
                 Empty { icon: "playlist_add", title: "Плейлист пуст", text: "Добавляйте треки через меню «…» → «В плейлист»." }

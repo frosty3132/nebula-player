@@ -91,6 +91,9 @@ pub struct PlaylistInfo {
     pub user: String,
     pub user_urn: Option<String>,
     pub permalink: Option<String>,
+    /// Когда плейлист последний раз меняли на SoundCloud (`last_modified`) —
+    /// синхронизация не перечитывает треки, если он не менялся.
+    pub modified: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]

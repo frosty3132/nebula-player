@@ -14,6 +14,7 @@ mod import_dialog;
 mod lyrics_view;
 mod overlays;
 mod pages;
+mod pl_sync;
 mod player_bar;
 mod sc_account;
 mod spotify_card;
@@ -25,6 +26,7 @@ mod theme_editor;
 mod tracks;
 mod transition;
 mod tray_menu;
+mod update;
 mod widgets;
 
 use crate::audio::{PlaybackState, PlayerEvent};
@@ -1070,6 +1072,17 @@ pub fn App() -> Element {
     // создаём после первой отрисовки — новое дерево Dioxus посреди отрисовки
     // главного окна сбивало его, и приложение закрывалось
     use_effect(|| tray_menu::init());
+    // плейлисты Nebula ↔ SoundCloud
+    pl_sync::use_playlist_sync(st);
+    // новые релизы на GitHub — через пару секунд после запуска, чтобы не мешать старту
+    use_hook(move || {
+        if st.settings.peek().check_updates {
+            spawn(async move {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                update::check_now(st, false);
+            });
+        }
+    });
     use_effect(move || {
         // значок виден, пока крестик прячет окно в трей; Alt+F4 ведёт себя так же
         let on = st.settings.read().close_to_tray;
@@ -1098,6 +1111,10 @@ pub fn App() -> Element {
                     playing: matches!(*st.pstate.peek(), PlaybackState::Playing | PlaybackState::Buffering),
                     title: st.now.peek().as_ref().map(|t| format!("{} — {}", t.title, t.artist)).unwrap_or_default(),
                 });
+            }
+            // Nebula запустили ещё раз — вместо второй копии показываем это окно
+            if crate::single_instance::take_show_request() {
+                show_from_tray(st);
             }
             for c in tray_menu::take_commands() {
                 match c {
@@ -1286,6 +1303,7 @@ pub fn App() -> Element {
             }
             ContextMenu {}
             download::DownloadDialog {}
+            update::UpdateBanner {}
             ModalHost {}
             Toasts {}
             if *st.edit_mode.read() {

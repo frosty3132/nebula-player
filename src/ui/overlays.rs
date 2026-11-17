@@ -237,6 +237,11 @@ pub fn ModalHost() -> Element {
                         match &action {
                             ConfirmAction::DeletePlaylist(id) => {
                                 let mut lib = st.library;
+                                // связанный с SoundCloud — удаляем и там
+                                let linked = lib.peek().playlists.iter().find(|p| &p.id == id).and_then(|p| p.sc_urn.clone().map(|u| (u, p.name.clone())));
+                                if let Some((urn, name)) = linked {
+                                    super::pl_sync::delete_remote(st, urn, name);
+                                }
                                 lib.write().playlists.retain(|p| &p.id != id);
                                 navigate(st, Route::Playlists);
                             }

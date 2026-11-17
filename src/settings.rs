@@ -167,6 +167,10 @@ pub struct Settings {
     pub island_desktop: bool,
     /// Крестик прячет Nebula в трей (музыка играет дальше), а не закрывает.
     pub close_to_tray: bool,
+    /// Проверять новые релизы на GitHub при запуске.
+    pub check_updates: bool,
+    /// Синхронизировать плейлисты Nebula со своими плейлистами SoundCloud.
+    pub sc_playlist_sync: bool,
     /// Город для погоды в островке (пусто — погода не показывается).
     pub weather_city: String,
     /// Папка для скачанных треков (пусто — системная «Загрузки»).
@@ -248,6 +252,8 @@ impl Default for Settings {
             player_collapsed: false,
             island_desktop: true,
             close_to_tray: true,
+            check_updates: true,
+            sc_playlist_sync: true,
             weather_city: String::new(),
             download_dir: None,
             download_ask: true,

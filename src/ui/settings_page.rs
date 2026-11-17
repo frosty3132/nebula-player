@@ -501,6 +501,7 @@ fn AccountTab() -> Element {
     let st = app_state();
     let user = st.sc_user.read().clone();
     let web = svc().sc.web_mode();
+    let pl_sync = st.settings.read().sc_playlist_sync;
     let mut dev_open = use_signal(|| svc().sc.has_dev_keys() && !svc().sc.web_mode());
     let dev_class = if dev_open() { "collapse-head open" } else { "collapse-head" };
     rsx! {
@@ -523,6 +524,12 @@ fn AccountTab() -> Element {
                             button { class: "btn ghost", "data-el": "button", onclick: move |_| sc_account::logout(st),
                                 Icon { name: "logout", size: 18 } "Выйти"
                             }
+                        }
+                        Row { label: "Синхронизировать плейлисты", hint: "Свои плейлисты SoundCloud появляются в Nebula, а плейлисты Nebula — в SoundCloud (закрытыми). Треки, порядок и название меняются в обе стороны",
+                            Toggle { value: pl_sync, onchange: move |v| { upd(st, |s| s.sc_playlist_sync = v); if v { super::pl_sync::sync_now(st, false); } } }
+                        }
+                        if pl_sync {
+                            div { class: "set-actions", super::pl_sync::SyncChip {} }
                         }
                     }
                 }
@@ -720,6 +727,9 @@ fn AboutTab() -> Element {
                 li { "Синхронные тексты — LRCLIB (lrclib.net), открытая база текстов." }
                 li { "Локальные файлы: MP3, FLAC, WAV, OGG Vorbis, AAC/M4A, AIFF." }
             }
+        }
+        Card { title: "Обновления", icon: "download", desc: "Новые версии с GitHub — одной кнопкой",
+            super::update::UpdateSettings {}
         }
     }
 }

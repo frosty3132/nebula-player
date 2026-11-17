@@ -14,8 +14,11 @@ mod media;
 mod model;
 mod paths;
 mod sc_login;
+mod sc_sync;
 mod services;
 mod settings;
+mod single_instance;
+mod updater;
 mod soundcloud;
 mod spotify;
 mod theme;
@@ -153,6 +156,12 @@ fn main() {
     let p = paths::init();
     init_logging(p);
     tracing::info!("Nebula {} запускается; данные: {}", env!("CARGO_PKG_VERSION"), p.config.display());
+    // вторая копия не запускается: будит первую (та покажет окно) и выходит
+    if !single_instance::acquire() {
+        return;
+    }
+    // exe, оставшийся от прошлого обновления
+    updater::cleanup_old();
 
     let settings = settings::Settings::load();
     dark_menus();

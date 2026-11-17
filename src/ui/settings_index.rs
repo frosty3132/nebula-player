@@ -129,6 +129,7 @@ pub const INDEX: &[Entry] = &[
     card(Elements, "Каждый элемент — отдельно", "inspector редактор элементов ctrl+e"),
     // ── аккаунт, кэш, прочее ──
     card(Account, "Аккаунт SoundCloud", "вход логин login выйти soundcloud"),
+    row(Account, "Аккаунт SoundCloud", "Синхронизировать плейлисты", "Плейлисты Nebula и SoundCloud меняются вместе", "синхронизация sync плейлисты soundcloud связать"),
     card(Account, "Spotify", "spotify спотифай привязать перенос импорт плейлисты лайки любимые"),
     row(Account, "Свои ключи API (для разработчиков)", "Client ID", "", "api ключи developer"),
     row(Cache, "Кэш", "Лимит кэша обложек", "", "cache кэш обложки"),
@@ -136,6 +137,8 @@ pub const INDEX: &[Entry] = &[
     card(Cache, "Данные", "папка настроек сброс reset"),
     card(Hotkeys, "Горячие клавиши", "hotkeys клавиши shortcuts"),
     card(About, "Nebula", "about версия о программе"),
+    row(About, "Обновления", "Проверять обновления при запуске", "Nebula смотрит новые релизы на GitHub и предлагает обновиться одной кнопкой", "обновление update релиз версия github новая"),
+    card(About, "Обновления", "обновить update проверить версия релиз"),
 ];
 
 /// Нормализация для поиска: нижний регистр, ё → е.
