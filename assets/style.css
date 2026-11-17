@@ -2830,3 +2830,11 @@ button.stage-tag:hover { color: var(--text); border-color: rgba(var(--text-rgb),
 .pl-sync-row.on > .icon { color: #49c98a; }
 .pl-sync-text { flex: 1; min-width: 0; }
 .btn.sm { height: 30px; padding: 0 11px; font-size: 12.5px; }
+
+/* всплывающие меню и окна поверх содержимого — почти непрозрачные при любой
+   прозрачности стекла в теме: текст под ними не должен просвечивать */
+/* !important — иначе «Жидкое стекло» темы (.app.glass-liquid .glass) снова делает их прозрачными */
+.ctx-menu, .modal, .eq-panel, .inspector {
+  background: rgba(var(--surface2-rgb), max(.95, calc(var(--glass) + .1))) !important;
+  backdrop-filter: blur(max(var(--blur), 22px)) saturate(140%) !important;
+}
