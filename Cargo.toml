@@ -1,6 +1,6 @@
 [package]
 name = "nebula-player"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 description = "Nebula — галактический музыкальный плеер для SoundCloud и локальной музыки"
 license = "MIT"
